@@ -13,3 +13,18 @@ log_level: INFO
 seen_max: 500000
 connect_timeout: 10
 read_timeout: 15
+store_concurrency: 4
+urlcheck_url: "https://url-check.exorde.network/v1/check"
+urlcheck_batch: 100
+urlcheck_flush: 1.0
+popular_weight: 3        # popular requests per one SUBS request
+adaptive: false
+interval_min: 0.6
+interval_max: 3.0
+queue_max: 5000
+spool_max_files: 2000
+metrics_interval: 30
+vpn_port_base: 21000
+vpn_test_interval: 600   # re-test all nodes, sec
+vpn_sub_refresh: 3600    # re-download subscription, sec
+vpn_switch_gain: 0.8     # switch only if new best latency < current * this
