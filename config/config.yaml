@@ -1,0 +1,15 @@
+# Defaults; env vars override these. No secrets here.
+store_endpoint: "http://127.0.0.1:9000/store_items"
+urlcheck_policy: closed
+subs: [AskReddit, politics, worldnews]
+req_interval: 1.0
+jitter: 0.2
+batch_min: 30
+batch_max: 100
+flush_seconds: 5
+min_text_len: 7
+parent_mode: "null"
+log_level: INFO
+seen_max: 500000
+connect_timeout: 10
+read_timeout: 15
