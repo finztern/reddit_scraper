@@ -31,7 +31,7 @@ def extract_known(data) -> set[str]:
 
 class UrlChecker:
     def __init__(self, url: str, proxy_getter: Callable[[], str | None], policy: str = "closed",
-                 on_failure: Callable[[], None] | None = None, direct: bool = False) -> None:
+                 on_failure: Callable[[str | None], None] | None = None, direct: bool = False) -> None:
         self._url = url
         self._proxy = proxy_getter
         self._policy = policy
@@ -57,8 +57,10 @@ class UrlChecker:
 
     async def unknown(self, items: list[dict]) -> list[dict] | None:
         """Items NOT known to Exorde. None = service unavailable and policy is `closed`."""
+        used: str | None = None
         try:
             c = await self._get_client()
+            used = self._client_proxy
             if c is None:
                 raise RuntimeError("no proxy available")
             t0 = time.monotonic()
@@ -69,7 +71,7 @@ class UrlChecker:
         except Exception as e:  # noqa: BLE001
             log.warning("url-check failed: %s", type(e).__name__)
             if self._on_failure:
-                self._on_failure()
+                self._on_failure(used)
             return list(items) if self._policy == "open" else None
         return [i for i in items if i["url"] not in known]
 

@@ -24,3 +24,16 @@ def test_config():
     assert st["network"] == "httpupgrade" and st["httpupgradeSettings"]["path"] == "/de2/"
     assert st["tlsSettings"]["serverName"] == "h.example.org"
     json.dumps(cfg)
+
+
+def test_report_failure_ignores_stale_proxy():
+    from reddit.vpn import VpnManager
+    v = VpnManager("", "/tmp", "http://x")
+    v._nodes = parse_subscription(URI + "\n" + URI2)
+    v._lat = {n.key: 0.1 * (i + 1) for i, n in enumerate(v._nodes)}
+    v._cur = v._nodes[0].key
+    old = v.proxy()
+    v.report_failure(old)                   # drops node 0, switches to node 1
+    assert v.proxy() != old and len(v._lat) == 1
+    v.report_failure(old)                   # stale report from a parallel batch: ignored
+    assert len(v._lat) == 1

@@ -332,6 +332,7 @@ class NodePool:
 
     async def run(self) -> None:
         self.sync_nodes()
+        self._rescan.clear()  # startup xray restart already fired nodes_changed
         await self.scan(list(self.nodes.values()))
         self._bg = [asyncio.create_task(self._tune_loop()), asyncio.create_task(self._rescan_loop())]
         await self.stop.wait()

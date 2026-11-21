@@ -149,8 +149,11 @@ class VpnManager:
                 return f"socks5h://127.0.0.1:{self._base + i}"
         return None
 
-    def report_failure(self) -> None:
-        """url-check failed through the current node: drop it and re-test soon."""
+    def report_failure(self, proxy: str | None = None) -> None:
+        """url-check failed through `proxy` (default: current): drop that node and re-test soon.
+        A failure reported for an already replaced node is ignored (parallel batches fail together)."""
+        if proxy is not None and proxy != self.proxy():
+            return
         if self._cur:
             self._lat.pop(self._cur, None)
             self._pick(force=True)
