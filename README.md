@@ -54,3 +54,7 @@ docker compose run --rm parser python scripts/scan_nodes.py     # per-node table
 - Limiters (0 = off): `MAX_ITEMS_PER_SEC`, `MAX_PAGES_PER_SEC`, `MAX_GB_PER_DAY` (rolling 24h, `data/traffic.json`; 90% -> interval x2, 100% -> pause).
 - `URLCHECK_CONCURRENCY` = parallel url-check batches (watch `uc_lat` and `queue`).
 - Log fields: `nodes=good/total mb/s gb_day iv pop rep sat cold403 uc_lat queue rate_cap(in filtered)`.
+
+### Nodes from a file
+Put vless:// links (one per line, or base64) into `config/nodes.txt` (git-ignored) and set `VPN_NODES_FILE=/app/config/nodes.txt`
+instead of `VPN_SUB_URL`. The file is re-read every `VPN_TEST_INTERVAL`s; node set changes restart xray automatically.

@@ -211,7 +211,29 @@ def test_autotune_share():
 def test_nodes_mode_requires_sub_url():
     s = Settings()
     s.source_mode = "nodes"
-    with pytest.raises(config.ConfigError, match="VPN_SUB_URL"):
+    with pytest.raises(config.ConfigError, match="VPN_NODES_FILE"):
         config.check(s)
     s.vpn_sub_url = "https://example.com/sub"
     config.check(s)
+
+
+def test_nodes_file(tmp_path):
+    s = Settings()
+    s.source_mode = "nodes"
+    s.vpn_nodes_file = str(tmp_path / "nodes.txt")
+    with pytest.raises(config.ConfigError, match="not found"):
+        config.check(s)
+    (tmp_path / "nodes.txt").write_text("vless://11111111-2222-3333-4444-555555555555@example.org:443?security=tls#n1\n")
+    config.check(s)
+    from reddit.vpn import VpnManager
+
+    v = VpnManager("", str(tmp_path), "http://x", nodes_file=s.vpn_nodes_file)
+
+    async def go():
+        v._dir.mkdir(parents=True, exist_ok=True)
+        async def noop():
+            pass
+        v._restart_xray = noop
+        await v._refresh_subscription()
+    asyncio.run(go())
+    assert [n[1] for n in v.node_ports()] == ["n1"]

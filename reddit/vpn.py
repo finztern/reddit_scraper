@@ -115,13 +115,14 @@ def build_xray_config(nodes: list[Node], port_base: int) -> dict:
 class VpnManager:
     def __init__(self, sub_url: str, data_dir: str, test_url: str, port_base: int = 21000,
                  test_interval: float = 600.0, sub_refresh: float = 3600.0, switch_gain: float = 0.8,
-                 xray_bin: str = "xray") -> None:
+                 xray_bin: str = "xray", nodes_file: str = "") -> None:
         self._sub_url = sub_url
+        self._file = nodes_file
         self._dir = Path(data_dir) / "xray"
         self._test_url = test_url
         self._base = port_base
         self._test_iv = test_interval
-        self._refresh_iv = sub_refresh
+        self._refresh_iv = min(sub_refresh, test_interval) if nodes_file else sub_refresh  # local file: cheap re-read
         self._gain = switch_gain
         self._bin = xray_bin
         self._nodes: list[Node] = []
@@ -198,12 +199,15 @@ class VpnManager:
         cache = self._dir / "nodes.cache"
         text = ""
         try:
-            async with httpx.AsyncClient(timeout=20, trust_env=False) as c:
-                r = await c.get(self._sub_url)
-                r.raise_for_status()
-                text = r.text
+            if self._file:
+                text = Path(self._file).read_text()
+            else:
+                async with httpx.AsyncClient(timeout=20, trust_env=False) as c:
+                    r = await c.get(self._sub_url)
+                    r.raise_for_status()
+                    text = r.text
         except Exception as e:  # noqa: BLE001
-            log.warning("subscription download failed: %s", type(e).__name__)
+            log.warning("nodes %s failed: %s", "file read" if self._file else "subscription download", type(e).__name__)
         nodes = parse_subscription(text) if text else []
         if nodes:
             cache.write_text(text)

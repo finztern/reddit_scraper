@@ -41,9 +41,10 @@ async def amain() -> None:
     m = Metrics()
     seen = SeenCache(s.seen_max)
     vpn: VpnManager | None = None
-    if s.vpn_sub_url and (nodes_mode or not s.urlcheck_proxy):
+    vpn_src = s.vpn_sub_url or s.vpn_nodes_file
+    if vpn_src and (nodes_mode or not s.urlcheck_proxy):
         vpn = VpnManager(s.vpn_sub_url, s.data_dir, s.urlcheck_url, s.vpn_port_base,
-                         s.vpn_test_interval, s.vpn_sub_refresh, s.vpn_switch_gain)
+                         s.vpn_test_interval, s.vpn_sub_refresh, s.vpn_switch_gain, nodes_file=s.vpn_nodes_file)
     if s.urlcheck_proxy:
         proxy_getter = lambda: s.urlcheck_proxy  # noqa: E731
         on_fail = None
@@ -52,9 +53,9 @@ async def amain() -> None:
         proxy_getter, on_fail = vpn.proxy, vpn.report_failure
     else:
         proxy_getter, on_fail = (lambda: None), None
-        log.warning("no URLCHECK_PROXY / VPN_SUB_URL: url-check goes direct")
+        log.warning("no URLCHECK_PROXY / VPN_SUB_URL / VPN_NODES_FILE: url-check goes direct")
     checker = UrlChecker(s.urlcheck_url, proxy_getter, s.urlcheck_policy, on_fail,
-                         direct=not (s.urlcheck_proxy or s.vpn_sub_url))
+                         direct=not (s.urlcheck_proxy or vpn_src))
     m.gauges["uc_lat"] = lambda: f"{checker.median_latency():.2f}"
     sender = Sender(s, seen, m, checker)
     bucket = TokenBucket(s.max_items_per_sec) if s.max_items_per_sec > 0 else None

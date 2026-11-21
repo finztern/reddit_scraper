@@ -12,9 +12,9 @@ from reddit.vpn import VpnManager
 
 async def main() -> None:
     s = config.load()
-    if not s.vpn_sub_url:
-        raise SystemExit("VPN_SUB_URL is not set")
-    vpn = VpnManager(s.vpn_sub_url, s.data_dir, s.urlcheck_url, s.vpn_port_base)
+    if not (s.vpn_sub_url or s.vpn_nodes_file):
+        raise SystemExit("VPN_SUB_URL / VPN_NODES_FILE is not set")
+    vpn = VpnManager(s.vpn_sub_url, s.data_dir, s.urlcheck_url, s.vpn_port_base, nodes_file=s.vpn_nodes_file)
     await vpn.start()
     nodes = vpn.node_ports()
     sem = asyncio.Semaphore(s.node_scan_concurrency)

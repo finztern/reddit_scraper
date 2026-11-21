@@ -45,6 +45,7 @@ class Settings:
     data_dir: str = "data"
     # VPN manager (active when vpn_sub_url is set and urlcheck_proxy is empty)
     vpn_sub_url: str = ""
+    vpn_nodes_file: str = ""             # file with vless:// lines (alternative to the subscription link)
     vpn_port_base: int = 21000
     vpn_test_interval: float = 600.0
     vpn_sub_refresh: float = 3600.0
@@ -96,8 +97,11 @@ def check(s: "Settings") -> None:
     """Startup validation; raises ConfigError with a readable message."""
     if s.source_mode not in ("direct", "nodes"):
         raise ConfigError(f"SOURCE_MODE must be direct|nodes, got {s.source_mode!r}")
-    if s.source_mode == "nodes" and not s.vpn_sub_url:
-        raise ConfigError("SOURCE_MODE=nodes requires VPN_SUB_URL (subscription link, set it in .env)")
+    if s.source_mode == "nodes":
+        if not (s.vpn_sub_url or s.vpn_nodes_file):
+            raise ConfigError("SOURCE_MODE=nodes requires VPN_SUB_URL or VPN_NODES_FILE (set it in .env)")
+        if s.vpn_nodes_file and not Path(s.vpn_nodes_file).is_file():
+            raise ConfigError(f"VPN_NODES_FILE not found: {s.vpn_nodes_file}")
 
 
 def load() -> Settings:
@@ -140,6 +144,7 @@ def load() -> Settings:
     s.store_concurrency = int(e("STORE_CONCURRENCY", s.store_concurrency))
     s.adaptive = e("ADAPTIVE", str(s.adaptive)).lower() in ("1", "true", "yes")
     s.vpn_sub_url = e("VPN_SUB_URL", s.vpn_sub_url)  # secret: env only
+    s.vpn_nodes_file = e("VPN_NODES_FILE", s.vpn_nodes_file)
     s.vpn_test_interval = float(e("VPN_TEST_INTERVAL", s.vpn_test_interval))
     s.vpn_sub_refresh = float(e("VPN_SUB_REFRESH", s.vpn_sub_refresh))
     s.data_dir = e("DATA_DIR", s.data_dir)
