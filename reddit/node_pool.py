@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import random
 import re
 import statistics
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Awaitable, Callable
 
 from .autotune import AutoTuner, Window
@@ -17,6 +20,9 @@ from .limits import PageGate, TrafficBudget
 from .scheduler import POPULAR_URL, TargetPicker
 
 log = logging.getLogger("nodepool")
+
+Q_FACTORS = (1, 3, 12)  # quarantine escalation: 10 min, 30 min, 2 h (x NODE_QUARANTINE/600)
+Q_RESET = 3600.0        # a node that stayed healthy this long starts again from level 0
 
 COMMENT_MARK = 'data-type="comment"'
 _REGION = re.compile(r"\bp=([A-Za-z0-9_-]+)")
@@ -89,11 +95,15 @@ class NodeState:
 class NodePool:
     def __init__(self, s, vpn, metrics, on_page: Callable[..., Awaitable[int]], picker: TargetPicker,
                  tuner: AutoTuner, budget: TrafficBudget | None = None, gate: PageGate | None = None, demand=None,
-                 client_factory: Callable[[int, list[str]], object] | None = None) -> None:
+                 client_factory: Callable[[int, list[str]], object] | None = None,
+                 state_path: str | Path | None = None) -> None:
         self.s, self.vpn, self.m, self.on_page, self.picker = s, vpn, metrics, on_page, picker
         self.tuner, self.budget, self.gate, self.demand = tuner, budget, gate, demand
         self._factory = client_factory or (lambda port, prof: NodeClient(port, prof, s.connect_timeout, s.read_timeout))
         self.nodes: dict[str, NodeState] = {}
+        self._wall = time.time
+        self._state_path = Path(state_path) if state_path else None
+        self._state: dict[str, dict] = self._load_state()
         self.stop = asyncio.Event()
         self._rescan = asyncio.Event()
         self._sem = asyncio.Semaphore(max(1, s.node_scan_concurrency))
@@ -144,6 +154,59 @@ class NodePool:
             asyncio.get_running_loop().create_task(n.client.close())
             n.client = None
 
+    # ---- persistent node state (scan results + quarantine escalation survive restarts) ----
+    def _load_state(self) -> dict[str, dict]:
+        if not self._state_path or not self._state_path.exists():
+            return {}
+        try:
+            d = json.loads(self._state_path.read_text())
+            return {str(k): dict(v) for k, v in d.items()}
+        except Exception:  # noqa: BLE001
+            log.warning("nodes_state.json unreadable, ignoring")
+            return {}
+
+    def _save_state(self) -> None:
+        if not self._state_path:
+            return
+        keep = {k: v for k, v in self._state.items() if k in self.nodes}
+        tmp = self._state_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(keep))
+        os.replace(tmp, self._state_path)
+
+    def _st(self, n: NodeState) -> dict:
+        return self._state.setdefault(n.key, {})
+
+    def _start(self, n: NodeState, profile: str | None, wait: float = 0.0, client=None) -> None:
+        """Start a worker. Without `client` the session is cold (no scan was done): the first 403 is retried."""
+        warm = client is not None
+        if client is None:
+            client = self._factory(n.port, self.s.node_profiles)
+        if profile:
+            client.set_profile(profile)
+        n.client, n.profile, n.warm = client, profile, warm
+        n.bad_streak = n.errs = 0
+        n.task = asyncio.create_task(self._worker(n, wait))
+
+    def _plan(self, cands: list[NodeState], bad_ttl: float) -> list[NodeState]:
+        """Use remembered results: start known-good nodes (or resting ones) without a scan, skip recently
+        known-bad ones. Returns nodes that really need a scan."""
+        now, scan = self._wall(), []
+        for n in cands:
+            st = self._state.get(n.key)
+            if not st or "checked" not in st:
+                scan.append(n)
+                continue
+            age, q_left = now - st["checked"], st.get("q_until", 0.0) - now
+            if q_left > 0:
+                self._start(n, st.get("profile"), q_left)
+            elif st.get("good") and age < self.s.node_state_ttl:
+                self._start(n, st.get("profile"))
+            elif not st.get("good") and age < bad_ttl:
+                continue
+            else:
+                scan.append(n)
+        return scan
+
     # ---- scan ----
     async def _scan_hook(self, status: int, text: str, nb: int) -> None:
         self.m.inc("pages")
@@ -161,25 +224,31 @@ class NodePool:
                 return
             client = self._factory(n.port, self.s.node_profiles)
             res = await scan_node(client, POPULAR_URL, self.s.node_profiles, hook=self._scan_hook, sleep=self._sleep)
+            self._st(n).update(good=res.good, profile=res.profile, checked=self._wall())
             if res.good:
-                client.set_profile(res.profile)
-                n.client, n.profile, n.warm = client, res.profile, True
-                n.bad_streak = n.errs = 0
-                n.task = asyncio.create_task(self._worker(n))
+                self._start(n, res.profile, client=client)
             else:
                 await client.close()
 
     async def scan(self, nodes: list[NodeState]) -> None:
         self._last_scan = time.monotonic()
         await asyncio.gather(*(self._scan_one(n) for n in nodes), return_exceptions=True)
+        self._save_state()
         log.info("nodepool: scan good=%d/%d", self.good_count(), len(self.nodes))
 
     # ---- worker ----
     async def _quarantine(self, n: NodeState) -> None:
+        st, now = self._st(n), self._wall()
+        level = st.get("q_level", 0)
+        if now - st.get("q_end", 0.0) > Q_RESET:
+            level = 0
+        dur = self.s.node_quarantine * Q_FACTORS[min(level, len(Q_FACTORS) - 1)]
+        st.update(q_level=level + 1, q_until=now + dur)
+        self._save_state()
         n.quarantined = True
         self.m.inc("node_quarantine")
-        self.m.warn("quarantine", f"nodepool: node {n.name} quarantined {self.s.node_quarantine:.0f}s", 30)
-        await self._sleep(self.s.node_quarantine)
+        self.m.warn("quarantine", f"nodepool: node {n.name} quarantined {dur:.0f}s (level {level + 1})", 30)
+        await self._sleep(dur)
         if self.stop.is_set():
             return
         await n.client.reset()
@@ -187,8 +256,16 @@ class NodePool:
         n.warm = False
         n.mult = 1.0
         n.quarantined = False
+        st.update(q_until=0.0, q_end=self._wall())
+        self._save_state()
 
-    async def _worker(self, n: NodeState) -> None:
+    async def _worker(self, n: NodeState, wait: float = 0.0) -> None:
+        if wait > 0:  # restored from state: still resting after a restart
+            n.quarantined = True
+            await self._sleep(wait)
+            n.quarantined = False
+            n.warm = False
+            self._st(n).update(q_until=0.0, q_end=self._wall())
         await self._sleep(random.uniform(0, self._interval(n)))  # spread the start
         while not self.stop.is_set():
             if self.budget and self.budget.blocked():
@@ -253,6 +330,7 @@ class NodePool:
             n.bad_streak = 0
             n.warm = True
             n.mult = max(1.0, n.mult * 0.97)
+            self._st(n)["checked"] = self._wall()  # keeps a healthy node's record fresh
         elif status == 403:
             n.bad_streak += 1
             if n.warm:
@@ -300,7 +378,8 @@ class NodePool:
             if not due:
                 continue
             self.sync_nodes()
-            cand = [n for n in self.nodes.values() if not n.active]  # working workers are not touched
+            ttl = self.s.node_state_ttl if good >= self.s.node_min_good else 600.0  # emergency: recheck bad nodes sooner
+            cand = self._plan([n for n in self.nodes.values() if not n.active], ttl)  # working workers are not touched
             if cand:
                 await self.scan(cand)
 
@@ -325,6 +404,7 @@ class NodePool:
             if self.tuner.enabled:
                 log.info("nodepool: tune %s iv=%.2fs pop=%.2f new/s=%.1f", act, self.tuner.interval, self.tuner.share, w.new_s)
             self.tuner.save()
+            self._save_state()
             if self.budget:
                 self.budget.save()
                 if self.budget.max_bytes > 0 and self.budget.ratio() >= 0.9:
@@ -333,7 +413,9 @@ class NodePool:
     async def run(self) -> None:
         self.sync_nodes()
         self._rescan.clear()  # startup xray restart already fired nodes_changed
-        await self.scan(list(self.nodes.values()))
+        todo = self._plan(list(self.nodes.values()), self.s.node_state_ttl)
+        log.info("nodepool: restored %d nodes from state, scanning %d", self.good_count() + sum(1 for n in self.nodes.values() if n.active and n.quarantined), len(todo))
+        await self.scan(todo)
         self._bg = [asyncio.create_task(self._tune_loop()), asyncio.create_task(self._rescan_loop())]
         await self.stop.wait()
         for t in self._bg:
@@ -346,5 +428,6 @@ class NodePool:
             if n.client is not None:
                 await n.client.close()
         self.tuner.save()
+        self._save_state()
         if self.budget:
             self.budget.save()

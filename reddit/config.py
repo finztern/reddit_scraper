@@ -65,6 +65,7 @@ class Settings:
     node_min_good: int = 10
     node_popular_share: float = 0.5
     node_fallback_direct: bool = False
+    node_state_ttl: float = 21600.0      # remembered scan result is trusted this long (sec)
     node_profiles: list[str] = field(default_factory=lambda: ["safari", "chrome"])
     max_items_per_sec: float = 0.0       # 0 = unlimited
     max_pages_per_sec: float = 0.0
@@ -81,7 +82,7 @@ _NODE_KEYS = {  # attr -> type
     "source_mode": str, "node_interval": float, "node_autotune": bool, "node_interval_min": float,
     "node_interval_max": float, "node_tune_window": float, "node_include_direct": bool,
     "node_scan_concurrency": int, "node_quarantine": float, "node_rescan": float, "node_min_good": int,
-    "node_popular_share": float, "node_fallback_direct": bool, "node_profiles": list,
+    "node_popular_share": float, "node_fallback_direct": bool, "node_state_ttl": float, "node_profiles": list,
     "max_items_per_sec": float, "max_pages_per_sec": float, "max_gb_per_day": float,
     "urlcheck_concurrency": int, "target_rate": float, "buffer_seconds": float,
 }

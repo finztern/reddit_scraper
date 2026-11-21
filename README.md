@@ -65,3 +65,9 @@ Edit the file and save: picked up within ~2 s (`docker compose logs | grep runti
 - Output is released in even 0.5 s slices; `buffer_seconds` of output are kept pre-fetched, so the flow does not stall during a request.
 - Page requests are demand-driven (nodes and direct): fetch only while buffer + in-flight < `target_rate*buffer_seconds`.
 - Check: `sent/s` ~= `target_rate`, `buf` ~= `target_rate*buffer_seconds`, `rate=` in the log line. Interval autotune does not probe faster while limited.
+
+## Node state & escalating quarantine
+- `data/nodes_state.json` remembers per node (by hash, no links): good/bad scan result, profile, quarantine level. After a restart
+  known-good nodes start without a scan, known-bad ones (checked < `NODE_STATE_TTL`=6 h ago) are skipped, resting nodes finish their rest.
+- Quarantine escalates per node: `NODE_QUARANTINE` x1, x3, x12 (600 s / 30 min / 2 h), resets after 1 h of healthy work.
+- Periodic rescan only rechecks bad nodes older than the TTL (10 min if good < `NODE_MIN_GOOD`). Delete the file to force a full rescan.

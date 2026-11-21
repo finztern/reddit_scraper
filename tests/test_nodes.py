@@ -237,3 +237,54 @@ def test_nodes_file(tmp_path):
         await v._refresh_subscription()
     asyncio.run(go())
     assert [n[1] for n in v.node_ports()] == ["n1"]
+
+
+def test_quarantine_escalates():
+    async def go():
+        c = FakeClient([(200, FULL), (200, FULL)] + [(403, "x")])    # then 403 forever
+        pool, m, sleeps = mk_pool({1: c})
+        await run_pool(pool, lambda: len([x for x in sleeps if x >= 600]) >= 4)
+        long = [x for x in sleeps if x >= 600]
+        assert long[:4] == [600, 1800, 7200, 7200]                  # level caps at x12
+        assert pool._state["k1"]["q_level"] >= 3
+    asyncio.run(go())
+
+
+def test_state_survives_restart(tmp_path):
+    async def go():
+        sp = tmp_path / "nodes_state.json"
+        a1, b1 = FakeClient([(200, FULL)]), FakeClient([(403, "x")])
+        pool, _, _ = mk_pool({1: a1, 2: b1})
+        pool._state_path = sp
+        await run_pool(pool, lambda: True)
+        pool._save_state()
+        assert sp.exists()
+
+        a2, b2 = FakeClient([(200, FULL)]), FakeClient([(403, "x")])
+        pool2, _, _ = mk_pool({1: a2, 2: b2})
+        pool2._state_path = sp
+        pool2._state = pool2._load_state()
+        pool2.sync_nodes()
+        todo = pool2._plan(list(pool2.nodes.values()), 21600)
+        assert todo == []                                            # nothing to scan: A restored, B known bad
+        await asyncio.sleep(0.05)
+        pool2.stop.set()
+        await asyncio.gather(*(n.task for n in pool2.nodes.values() if n.task), return_exceptions=True)
+        assert a2.calls > 0 and b2.calls == 0                        # known-bad node was not touched
+        assert pool2.nodes["k1"].task is not None and pool2.nodes["k2"].task is None
+    asyncio.run(go())
+
+
+def test_restored_quarantine_is_respected(tmp_path):
+    async def go():
+        c = FakeClient([(200, FULL)])
+        pool, _, sleeps = mk_pool({1: c})
+        pool.sync_nodes()
+        now = pool._wall()
+        pool._state = {"k1": {"good": True, "profile": "safari", "checked": now, "q_until": now + 300, "q_level": 1}}
+        assert pool._plan(list(pool.nodes.values()), 21600) == []
+        await asyncio.sleep(0.05)
+        pool.stop.set()
+        await asyncio.gather(*(n.task for n in pool.nodes.values() if n.task), return_exceptions=True)
+        assert any(290 <= x <= 300 for x in sleeps)                  # rests the remaining time first
+    asyncio.run(go())

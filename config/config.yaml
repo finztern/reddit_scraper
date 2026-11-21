@@ -46,6 +46,7 @@ node_rescan: 1800
 node_min_good: 10
 node_popular_share: 0.5
 node_fallback_direct: false
+node_state_ttl: 21600     # trust remembered good/bad scan result for 6 h (data/nodes_state.json)
 node_profiles: [safari, chrome]
 max_items_per_sec: 0      # 0 = no limit
 max_pages_per_sec: 0
