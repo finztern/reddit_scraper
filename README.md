@@ -79,3 +79,14 @@ Edit the file and save: picked up within ~2 s (`docker compose logs | grep runti
 
 ## Dashboard
 Live web page with all metrics: `http://<pc-ip>:8080` from any LAN device (`DASH_HOST`, default 0.0.0.0, no auth, `DASH_PORT`; 0 = off). JSON: `/api`. Host network, no port mapping needed.
+
+## Proxy mode (`SOURCE_MODE=proxy`)
+Same worker pool as nodes mode (scan, quarantine, autotune, limits), but the workers are HTTP/SOCKS proxies from `config/proxys.txt`
+(git-ignored; one per line: `user:pass@host:port`, `host:port:user:pass`, `host:port` or `scheme://...`; `#` comments).
+```
+# .env: SOURCE_MODE=proxy, PROXY_FILE=/app/config/proxys.txt
+docker compose up -d --build
+docker compose logs -f --tail=50 | grep -E "proxylist|nodepool|new/s"
+```
+The file is re-read every 60 s; a changed proxy set triggers a rescan. `NODE_INCLUDE_DIRECT=true` keeps the home IP as one more worker.
+url-check is independent: still via `URLCHECK_PROXY` / VPN. Node tuning keys (`NODE_*`) apply to proxies too.

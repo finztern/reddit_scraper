@@ -56,6 +56,7 @@ class Settings:
     urlcheck_retries: int = 1           # extra rounds before URLCHECK_POLICY applies
     # nodes mode
     source_mode: str = "direct"          # direct | nodes
+    proxy_file: str = "config/proxys.txt"  # SOURCE_MODE=proxy: one proxy per line (git-ignored)
     node_interval: float = 5.0
     node_autotune: bool = True
     node_interval_min: float = 5.0
@@ -85,7 +86,7 @@ class ConfigError(Exception):
 
 
 _NODE_KEYS = {  # attr -> type
-    "source_mode": str, "node_interval": float, "node_autotune": bool, "node_interval_min": float,
+    "source_mode": str, "proxy_file": str, "node_interval": float, "node_autotune": bool, "node_interval_min": float,
     "node_interval_max": float, "node_tune_window": float, "node_include_direct": bool,
     "node_scan_concurrency": int, "node_quarantine": float, "node_rescan": float, "node_min_good": int,
     "node_popular_share": float, "node_fallback_direct": bool, "node_state_ttl": float, "node_max_per_min": int, "node_profiles": list,
@@ -105,8 +106,10 @@ def _conv(typ, v):
 
 def check(s: "Settings") -> None:
     """Startup validation; raises ConfigError with a readable message."""
-    if s.source_mode not in ("direct", "nodes"):
-        raise ConfigError(f"SOURCE_MODE must be direct|nodes, got {s.source_mode!r}")
+    if s.source_mode not in ("direct", "nodes", "proxy"):
+        raise ConfigError(f"SOURCE_MODE must be direct|nodes|proxy, got {s.source_mode!r}")
+    if s.source_mode == "proxy" and not Path(s.proxy_file).is_file():
+        raise ConfigError(f"SOURCE_MODE=proxy: PROXY_FILE not found: {s.proxy_file}")
     if s.source_mode == "nodes":
         if not (s.vpn_sub_url or s.vpn_nodes_file):
             raise ConfigError("SOURCE_MODE=nodes requires VPN_SUB_URL or VPN_NODES_FILE (set it in .env)")

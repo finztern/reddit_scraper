@@ -8,3 +8,5 @@ __pycache__/
 .venv/
 config/nodes.txt
 config/*.nodes
+config/proxys.txt
+proxys.txt

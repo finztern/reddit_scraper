@@ -15,6 +15,7 @@ from .dashboard import Sampler, serve as serve_dashboard
 from .demand import DemandGate
 from .node_pool import NodePool
 from .pipeline import make_on_page
+from .proxy_list import ProxyList
 from .runtime import RuntimeConfig
 from .scheduler import Scheduler, TargetPicker
 from .seen_cache import SeenCache
@@ -40,6 +41,8 @@ async def amain() -> None:
     data = Path(s.data_dir)
     data.mkdir(parents=True, exist_ok=True)
     nodes_mode = s.source_mode == "nodes"
+    pool_mode = s.source_mode in ("nodes", "proxy")
+    plist = ProxyList(s.proxy_file) if s.source_mode == "proxy" else None
 
     m = Metrics()
     seen = SeenCache(s.seen_max)
@@ -74,14 +77,15 @@ async def amain() -> None:
     http = HttpClient(s.connect_timeout, s.read_timeout)
     scheds: list[Scheduler] = []
     pool: NodePool | None = None
-    if nodes_mode:
+    if pool_mode:
+        src = plist or vpn
         tuner = AutoTuner(s.node_interval, s.node_interval_min, s.node_interval_max, s.node_popular_share,
                           s.node_autotune, data / "nodepool.json")
         budget = TrafficBudget(s.max_gb_per_day, data / "traffic.json")
         gate = PageGate(s.max_pages_per_sec) if s.max_pages_per_sec > 0 else None
-        pool = NodePool(s, vpn, m, on_page, TargetPicker(s.subs, s.popular_weight), tuner, budget, gate, demand,
+        pool = NodePool(s, src, m, on_page, TargetPicker(s.subs, s.popular_weight), tuner, budget, gate, demand,
                         state_path=data / "nodes_state.json")
-        vpn.on_nodes_changed = pool.nodes_changed
+        src.on_nodes_changed = pool.nodes_changed
         log.info("nodes mode: interval=%.1fs autotune=%s popular_share=%.2f include_direct=%s limits: items=%s pages=%s gb=%s",
                  tuner.interval, s.node_autotune, tuner.share, s.node_include_direct,
                  s.max_items_per_sec or "off", s.max_pages_per_sec or "off", s.max_gb_per_day or "off")
@@ -121,6 +125,8 @@ async def amain() -> None:
 
     if vpn:
         await vpn.start()
+    if plist:
+        await plist.start()
     sender.start()
     hb = data / "heartbeat"
 
@@ -136,6 +142,8 @@ async def amain() -> None:
         tasks += [asyncio.create_task(sampler.run()), asyncio.create_task(serve_dashboard(sampler, s.dash_host, s.dash_port))]
     if vpn:
         tasks.append(asyncio.create_task(vpn.run()))
+    if plist:
+        tasks.append(asyncio.create_task(plist.run()))
     try:
         if pool is None:
             await new_direct().run()
@@ -154,6 +162,8 @@ async def amain() -> None:
         await http.close()
         if vpn:
             await vpn.stop()
+        if plist:
+            await plist.stop()
         log.info("stopped")
 
 

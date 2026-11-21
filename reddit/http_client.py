@@ -37,7 +37,7 @@ class HttpClient:
 class NodeClient:
     """One long-lived session through a SOCKS node (cookies persist). Recreated only by reset()."""
 
-    def __init__(self, port: int, profiles: list[str], connect_timeout: float = 10.0, read_timeout: float = 15.0) -> None:
+    def __init__(self, port: int | str, profiles: list[str], connect_timeout: float = 10.0, read_timeout: float = 15.0) -> None:
         self.port = port
         self._profiles = list(profiles) or ["chrome"]
         self._idx = 0
@@ -47,8 +47,8 @@ class NodeClient:
         self._s = self._new()
 
     def _new(self) -> AsyncSession:
-        return AsyncSession(proxies={"http": f"socks5h://127.0.0.1:{self.port}", "https": f"socks5h://127.0.0.1:{self.port}"},
-                            curl_options={CurlOpt.IPRESOLVE: 1})
+        url = self.port if isinstance(self.port, str) else f"socks5h://127.0.0.1:{self.port}"  # str = full proxy URL
+        return AsyncSession(proxies={"http": url, "https": url}, curl_options={CurlOpt.IPRESOLVE: 1})
 
     @property
     def profile(self) -> str:
