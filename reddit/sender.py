@@ -18,8 +18,12 @@ log = logging.getLogger("sender")
 
 
 class Sender:
-    def __init__(self, s, seen: SeenCache, metrics: Metrics, checker: UrlChecker | None) -> None:
+    def __init__(self, s, seen: SeenCache, metrics: Metrics, checker: UrlChecker | None, rate_fn=None) -> None:
         self.s = s
+        self.rate_fn = rate_fn or (lambda: 0.0)  # unique items/s to the collector; <=0 = unlimited
+        self._tick = 0.5
+        self._unchecked = 0
+        self.keep = 0.8  # EMA: share of items that survive url-check
         self.seen = seen
         self.m = metrics
         self.checker = checker
@@ -38,7 +42,12 @@ class Sender:
         self._stopping = False
         metrics.gauges["queue"] = lambda: self._in.qsize() + self._ready.qsize() + (self._batches.qsize() + self._cbatches.qsize()) * s.batch_max
 
+    def pending(self) -> int:
+        """Items waiting to be sent: url-checked buffer + (not yet checked) * survival rate."""
+        return self._ready.qsize() + int(self._unchecked * self.keep)
+
     async def submit(self, item: dict) -> None:
+        self._unchecked += 1
         await self._in.put(item)  # blocks when full -> natural backpressure on the scheduler
 
     def start(self) -> None:
@@ -82,6 +91,12 @@ class Sender:
                 raise
 
     async def _check(self, items: list[dict]) -> None:
+        try:
+            await self._check_inner(items)
+        finally:
+            self._unchecked -= len(items)
+
+    async def _check_inner(self, items: list[dict]) -> None:
         if self.checker is None:
             fresh = items
         else:
@@ -97,6 +112,7 @@ class Sender:
                     return
                 await asyncio.sleep(delay)  # policy=closed: never send unchecked, retry
                 delay = min(delay * 2, 30.0)
+            self.keep = 0.9 * self.keep + 0.1 * max(0.05, len(fresh) / len(items))
             fresh_ids = {i["external_id"] for i in fresh}
             known = [i for i in items if i["external_id"] not in fresh_ids]
             self.m.inc("uc_known", len(known))
@@ -106,10 +122,26 @@ class Sender:
             await self._ready.put(i)
 
     async def _batch_loop(self) -> None:
+        """rate<=0: batch as they come. rate>0: release `rate` items/s in small even slices (smooth output)."""
+        credit, last = 0.0, time.monotonic()
         while True:
-            batch = await self._take(self._ready, self.s.batch_max, self.s.flush_seconds)
-            if batch:
-                await self._batches.put(batch)
+            rate = self.rate_fn()
+            if rate <= 0:
+                batch = await self._take(self._ready, self.s.batch_max, self.s.flush_seconds)
+                if batch:
+                    await self._batches.put(batch)
+                credit, last = 0.0, time.monotonic()
+                continue
+            await asyncio.sleep(self._tick)
+            now = time.monotonic()
+            credit = min(credit + rate * (now - last), max(rate, 1.0))  # at most 1 s of burst
+            last = now
+            n = min(int(credit), self._ready.qsize())
+            credit -= n
+            while n > 0:
+                k = min(n, self.s.batch_max)
+                await self._batches.put([self._ready.get_nowait() for _ in range(k)])
+                n -= k
 
     async def _send_worker(self) -> None:
         while True:

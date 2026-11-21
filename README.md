@@ -58,3 +58,10 @@ docker compose run --rm parser python scripts/scan_nodes.py     # per-node table
 ### Nodes from a file
 Put vless:// links (one per line, or base64) into `config/nodes.txt` (git-ignored) and set `VPN_NODES_FILE=/app/config/nodes.txt`
 instead of `VPN_SUB_URL`. The file is re-read every `VPN_TEST_INTERVAL`s; node set changes restart xray automatically.
+
+## Output rate (hot-reload, no restart)
+`config/runtime.yaml`: `target_rate: 50` = unique (after url-check) comments/s sent to the collector, `0` = unlimited.
+Edit the file and save: picked up within ~2 s (`docker compose logs | grep runtime`). Works because `./config` is mounted as a directory.
+- Output is released in even 0.5 s slices; `buffer_seconds` of output are kept pre-fetched, so the flow does not stall during a request.
+- Page requests are demand-driven (nodes and direct): fetch only while buffer + in-flight < `target_rate*buffer_seconds`.
+- Check: `sent/s` ~= `target_rate`, `buf` ~= `target_rate*buffer_seconds`, `rate=` in the log line. Interval autotune does not probe faster while limited.

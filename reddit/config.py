@@ -69,6 +69,8 @@ class Settings:
     max_items_per_sec: float = 0.0       # 0 = unlimited
     max_pages_per_sec: float = 0.0
     max_gb_per_day: float = 0.0
+    target_rate: float = 0.0             # initial value; config/runtime.yaml overrides and hot-reloads
+    buffer_seconds: float = 5.0
 
 
 class ConfigError(Exception):
@@ -81,7 +83,7 @@ _NODE_KEYS = {  # attr -> type
     "node_scan_concurrency": int, "node_quarantine": float, "node_rescan": float, "node_min_good": int,
     "node_popular_share": float, "node_fallback_direct": bool, "node_profiles": list,
     "max_items_per_sec": float, "max_pages_per_sec": float, "max_gb_per_day": float,
-    "urlcheck_concurrency": int,
+    "urlcheck_concurrency": int, "target_rate": float, "buffer_seconds": float,
 }
 
 

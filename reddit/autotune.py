@@ -49,6 +49,7 @@ class AutoTuner:
         self.interval = min(max(interval, imin), imax)
         self.share = min(max(share, 0.2), 0.7) if enabled else share
         self.fixed_until = 0.0
+        self.probe = True  # False when output is demand-limited (target_rate): no hill-climb downwards
         self._pending: _Pending | None = None
         self._path = Path(path) if path else None
         self._now = now
@@ -99,7 +100,7 @@ class AutoTuner:
                 self.fixed_until = now + self.FREEZE
                 return "revert"
             return "keep"
-        if thr < 0.03 and emp < 0.25 and now >= self.fixed_until and self.interval > self.imin:
+        if self.probe and thr < 0.03 and emp < 0.25 and now >= self.fixed_until and self.interval > self.imin:
             self._pending = _Pending(prev=self.interval, base=w.new_s)
             self.interval = max(self.interval * self.DOWN, self.imin)
             return "down"

@@ -1,0 +1,3 @@
+# Hot-reloaded every ~2 s (no restart needed). Edit and save.
+target_rate: 50       # unique (url-check passed) comments/s sent to the collector; 0 = unlimited
+buffer_seconds: 5     # seconds of output kept pre-fetched in the buffer (smooths the flow)

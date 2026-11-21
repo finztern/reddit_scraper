@@ -5,7 +5,7 @@ from . import filters, mapper, parser
 from .scheduler import TargetPicker
 
 
-def make_on_page(s, m, seen, sender, parent_mode: str, bucket=None):
+def make_on_page(s, m, seen, sender, parent_mode: str, bucket=None, demand=None):
     async def on_page(text: str, url: str = "") -> int:
         raws = parser.parse(text)
         n = len(raws)
@@ -14,7 +14,7 @@ def make_on_page(s, m, seen, sender, parent_mode: str, bucket=None):
             return 0
         m.inc("pages_cmt")
         collected = mapper.utc_now_str()
-        dups = 0
+        dups = new = 0
         for raw in raws:
             if seen.has(raw.fullname):  # cheap early exit: most comments repeat between nodes
                 dups += 1
@@ -35,7 +35,10 @@ def make_on_page(s, m, seen, sender, parent_mode: str, bucket=None):
                 m.drop("dup")
                 continue
             m.inc("unique")
+            new += 1
             await sender.submit(mapper.to_item(raw, content, collected, parent_mode))
+        if demand:
+            demand.note_new(new)
         sat = n >= 90 and dups == 0
         if sat:
             m.inc("pages_sat")

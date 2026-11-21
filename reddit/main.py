@@ -11,8 +11,10 @@ from .autotune import AutoTuner
 from .http_client import HttpClient
 from .limits import PageGate, TokenBucket, TrafficBudget
 from .metrics import Metrics
+from .demand import DemandGate
 from .node_pool import NodePool
 from .pipeline import make_on_page
+from .runtime import RuntimeConfig
 from .scheduler import Scheduler, TargetPicker
 from .seen_cache import SeenCache
 from .sender import Sender
@@ -57,10 +59,14 @@ async def amain() -> None:
     checker = UrlChecker(s.urlcheck_url, proxy_getter, s.urlcheck_policy, on_fail,
                          direct=not (s.urlcheck_proxy or vpn_src))
     m.gauges["uc_lat"] = lambda: f"{checker.median_latency():.2f}"
-    sender = Sender(s, seen, m, checker)
+    rt = RuntimeConfig(Path(config.CONFIG_PATH).parent / "runtime.yaml", s.target_rate, s.buffer_seconds)
+    sender = Sender(s, seen, m, checker, rate_fn=lambda: rt.target_rate)
+    demand = DemandGate(sender, lambda: rt.target_rate, lambda: rt.buffer_seconds)
+    m.gauges["rate"] = lambda: f"{rt.target_rate:g}"
+    m.gauges["buf"] = sender.pending
     bucket = TokenBucket(s.max_items_per_sec) if s.max_items_per_sec > 0 else None
 
-    on_page = make_on_page(s, m, seen, sender, mode, bucket)
+    on_page = make_on_page(s, m, seen, sender, mode, bucket, demand)
 
     http = HttpClient(s.connect_timeout, s.read_timeout)
     scheds: list[Scheduler] = []
@@ -70,7 +76,7 @@ async def amain() -> None:
                           s.node_autotune, data / "nodepool.json")
         budget = TrafficBudget(s.max_gb_per_day, data / "traffic.json")
         gate = PageGate(s.max_pages_per_sec) if s.max_pages_per_sec > 0 else None
-        pool = NodePool(s, vpn, m, on_page, TargetPicker(s.subs, s.popular_weight), tuner, budget, gate)
+        pool = NodePool(s, vpn, m, on_page, TargetPicker(s.subs, s.popular_weight), tuner, budget, gate, demand)
         vpn.on_nodes_changed = pool.nodes_changed
         log.info("nodes mode: interval=%.1fs autotune=%s popular_share=%.2f include_direct=%s limits: items=%s pages=%s gb=%s",
                  tuner.interval, s.node_autotune, tuner.share, s.node_include_direct,
@@ -83,7 +89,7 @@ async def amain() -> None:
             sc.stop.set()
 
     def new_direct() -> Scheduler:
-        sc = Scheduler(s, http, m, on_page)
+        sc = Scheduler(s, http, m, on_page, demand=demand)
         scheds.append(sc)
         return sc
 
@@ -120,7 +126,7 @@ async def amain() -> None:
             log.info(m.line())
             await asyncio.sleep(s.metrics_interval)
 
-    tasks = [asyncio.create_task(ticker())]
+    tasks = [asyncio.create_task(ticker()), asyncio.create_task(rt.watch())]
     if vpn:
         tasks.append(asyncio.create_task(vpn.run()))
     try:

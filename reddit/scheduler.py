@@ -8,6 +8,7 @@ import time
 from typing import Awaitable, Callable
 
 from .http_client import HttpClient
+from .demand import NO_TICKET, Ticket
 from .metrics import Metrics
 
 log = logging.getLogger("scheduler")
@@ -61,7 +62,8 @@ class TargetPicker:
 
 class Scheduler:
     def __init__(self, s, http: HttpClient, metrics: Metrics,
-                 on_page: Callable[..., Awaitable[int]], picker: TargetPicker | None = None) -> None:
+                 on_page: Callable[..., Awaitable[int]], picker: TargetPicker | None = None, demand=None) -> None:
+        self.demand = demand
         self.s = s
         self.http = http
         self.m = metrics
@@ -94,9 +96,13 @@ class Scheduler:
 
     async def run(self) -> None:
         while not self.stop.is_set():
-            t0 = time.monotonic()
             url = self.picker.pick()
-            n = await self._one(url)
+            tk = await self.demand.acquire(self.stop) if self.demand else NO_TICKET
+            t0 = time.monotonic()
+            try:
+                n = await self._one(url, tk)
+            finally:
+                tk.done()
             self._adapt()
             if n == -1:  # 403/429 or network error: backoff already slept
                 continue
@@ -110,17 +116,20 @@ class Scheduler:
             gap = self.interval * random.uniform(1 - self.s.jitter, 1 + self.s.jitter)
             await self._sleep(max(0.0, gap - (time.monotonic() - t0)))
 
-    async def _one(self, url: str) -> int:
+    async def _one(self, url: str, tk: Ticket = NO_TICKET) -> int:
         self._win[0] += 1
         try:
             status, text = await self.http.fetch(url)
         except Exception as e:  # noqa: BLE001
+            tk.done()
             self.m.inc("fetch_err")
             self._win[1] += 1
             self.m.warn("fetch_exc", f"fetch error: {type(e).__name__}", 30)
             await self._sleep(5)
             return -1
         self.m.inc("pages")
+        if status != 200:
+            tk.done()
         if status in (403, 429):
             self.m.inc(f"http_{status}")
             self._win[1] += 1
@@ -135,6 +144,7 @@ class Scheduler:
             return -1
         self._ban = 60.0
         n = await self.on_page(text, url)
+        tk.done()
         if n == 0:
             self.m.inc("pages_empty")
             self._win[1] += 1

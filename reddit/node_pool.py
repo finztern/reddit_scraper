@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 from typing import Awaitable, Callable
 
 from .autotune import AutoTuner, Window
+from .demand import NO_TICKET, Ticket
 from .http_client import NodeClient
 from .limits import PageGate, TrafficBudget
 from .scheduler import POPULAR_URL, TargetPicker
@@ -87,10 +88,10 @@ class NodeState:
 
 class NodePool:
     def __init__(self, s, vpn, metrics, on_page: Callable[..., Awaitable[int]], picker: TargetPicker,
-                 tuner: AutoTuner, budget: TrafficBudget | None = None, gate: PageGate | None = None,
+                 tuner: AutoTuner, budget: TrafficBudget | None = None, gate: PageGate | None = None, demand=None,
                  client_factory: Callable[[int, list[str]], object] | None = None) -> None:
         self.s, self.vpn, self.m, self.on_page, self.picker = s, vpn, metrics, on_page, picker
-        self.tuner, self.budget, self.gate = tuner, budget, gate
+        self.tuner, self.budget, self.gate, self.demand = tuner, budget, gate, demand
         self._factory = client_factory or (lambda port, prof: NodeClient(port, prof, s.connect_timeout, s.read_timeout))
         self.nodes: dict[str, NodeState] = {}
         self.stop = asyncio.Event()
@@ -188,83 +189,97 @@ class NodePool:
         n.quarantined = False
 
     async def _worker(self, n: NodeState) -> None:
-        s, m = self.s, self.m
         await self._sleep(random.uniform(0, self._interval(n)))  # spread the start
         while not self.stop.is_set():
             if self.budget and self.budget.blocked():
-                m.warn("gb_cap", "nodepool: MAX_GB_PER_DAY reached, paused", 60)
+                self.m.warn("gb_cap", "nodepool: MAX_GB_PER_DAY reached, paused", 60)
                 await self._sleep(30)
                 continue
             if self.gate:
                 await self.gate.wait()
-            t0 = time.monotonic()
-            url = self.picker.pick_share(self.tuner.share)
+            tk = await self.demand.acquire(self.stop) if self.demand else NO_TICKET  # fetch only when the buffer needs it
+            if self.stop.is_set():
+                tk.done()
+                break
             try:
-                status, text, nb = await n.client.fetch(url)
+                await self._tick(n, tk)
+            finally:
+                tk.done()
+
+    async def _tick(self, n: NodeState, tk: Ticket) -> None:
+        s, m = self.s, self.m
+        t0 = time.monotonic()
+        url = self.picker.pick_share(self.tuner.share)
+        try:
+            status, text, nb = await n.client.fetch(url)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            tk.done()
+            n.errs += 1
+            m.inc("fetch_err")
+            m.warn("node_exc", f"nodepool: fetch error {type(e).__name__}", 30)
+            if n.errs >= 6:
+                n.errs = 0
+                await self._quarantine(n)
+                return
+            if n.errs == 3:
+                await n.client.reset()
+                n.warm = False
+            await self._sleep(5)
+            return
+        n.errs = 0
+        m.inc("pages")
+        m.inc("np_pages")
+        m.inc("bytes", nb)
+        if self.budget:
+            self.budget.add(nb)
+        if status != 200:
+            tk.done()
+        if status == 200:
+            try:
+                cnt = await self.on_page(text, url)
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001
-                n.errs += 1
-                m.inc("fetch_err")
-                m.warn("node_exc", f"nodepool: fetch error {type(e).__name__}", 30)
-                if n.errs >= 6:
-                    n.errs = 0
-                    await self._quarantine(n)
-                    continue
-                if n.errs == 3:
-                    await n.client.reset()
-                    n.warm = False
-                await self._sleep(5)
-                continue
-            n.errs = 0
-            m.inc("pages")
-            m.inc("np_pages")
-            m.inc("bytes", nb)
-            if self.budget:
-                self.budget.add(nb)
-            if status == 200:
-                try:
-                    cnt = await self.on_page(text, url)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as e:  # noqa: BLE001
-                    m.warn("on_page", f"nodepool: on_page error {type(e).__name__}", 30)
-                    cnt = 1
-                if cnt == 0:  # soft-empty page: not an error
-                    m.inc("pages_empty")
-                    m.inc("np_empty")
-                    await self._sleep(random.uniform(2, 5))
-                    continue
-                n.bad_streak = 0
-                n.warm = True
-                n.mult = max(1.0, n.mult * 0.97)
-            elif status == 403:
-                n.bad_streak += 1
-                if n.warm:
-                    m.inc("http_403")
-                    m.inc("np_403w")
-                else:
-                    m.inc("pages_cold403")
-                if n.bad_streak >= 4:
-                    await self._quarantine(n)
-                    continue
-                if n.bad_streak == 2:
-                    n.client.rotate_profile()  # same session, other TLS profile
-                await self._sleep(2 + 4 * min(n.bad_streak - 1, 5))  # retry in the SAME session
-                continue
-            elif status == 429:
-                m.inc("http_429")
-                m.inc("np_429")
-                m.warn("n429", f"nodepool: 429 on {n.name}, slowing node", 30)
-                n.mult = min(n.mult * 1.5, s.node_interval_max / max(self.tuner.interval, 1e-6))
-                await self._sleep(random.uniform(30, 60))
-                continue
+                m.warn("on_page", f"nodepool: on_page error {type(e).__name__}", 30)
+                cnt = 1
+            tk.done()
+            if cnt == 0:  # soft-empty page: not an error
+                m.inc("pages_empty")
+                m.inc("np_empty")
+                await self._sleep(random.uniform(2, 5))
+                return
+            n.bad_streak = 0
+            n.warm = True
+            n.mult = max(1.0, n.mult * 0.97)
+        elif status == 403:
+            n.bad_streak += 1
+            if n.warm:
+                m.inc("http_403")
+                m.inc("np_403w")
             else:
-                m.inc("fetch_err")
-                await self._sleep(5)
-                continue
-            gap = self._interval(n) * random.uniform(1 - s.jitter, 1 + s.jitter)
-            await self._sleep(max(0.0, gap - (time.monotonic() - t0)))
+                m.inc("pages_cold403")
+            if n.bad_streak >= 4:
+                await self._quarantine(n)
+                return
+            if n.bad_streak == 2:
+                n.client.rotate_profile()  # same session, other TLS profile
+            await self._sleep(2 + 4 * min(n.bad_streak - 1, 5))  # retry in the SAME session
+            return
+        elif status == 429:
+            m.inc("http_429")
+            m.inc("np_429")
+            m.warn("n429", f"nodepool: 429 on {n.name}, slowing node", 30)
+            n.mult = min(n.mult * 1.5, s.node_interval_max / max(self.tuner.interval, 1e-6))
+            await self._sleep(random.uniform(30, 60))
+            return
+        else:
+            m.inc("fetch_err")
+            await self._sleep(5)
+            return
+        gap = self._interval(n) * random.uniform(1 - s.jitter, 1 + s.jitter)
+        await self._sleep(max(0.0, gap - (time.monotonic() - t0)))
 
     # ---- background loops ----
     async def _rescan_loop(self) -> None:
@@ -304,6 +319,7 @@ class NodePool:
                        empty=d["np_empty"], new=d["unique"], pop_pages=d["pop_pages"], pop_cmt=d["pop_cmt"],
                        pop_dup=d["pop_dup"], pop_sat=d["pop_sat"])
             snap, t_prev = cur, now
+            self.tuner.probe = not (self.demand and self.demand.enabled())  # rate-limited: do not probe faster
             act = self.tuner.step(w)
             self.tuner.step_share(w)
             if self.tuner.enabled:
