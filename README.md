@@ -23,7 +23,7 @@ cp .env.example .env     # set VPN_SUB_URL (secret, env only)
 docker compose up -d --build
 docker compose logs -f --tail=50
 ```
-Metrics line every 30 s. Heartbeat: `data/heartbeat`. Spool (collector down): `data/spool/`.
+Metrics line every 30 s. Heartbeat: `data/heartbeat`. Spool (collector down): `data/spool/`, batches older than `SPOOL_MAX_AGE` (1800 s) are deleted (`spool_expired` counter).
 
 ## url-check VPN
 `VPN_SUB_URL` -> vless subscription (re-downloaded every `VPN_SUB_REFRESH`=3600 s). All nodes run in one xray

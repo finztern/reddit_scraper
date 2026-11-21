@@ -209,9 +209,27 @@ class Sender:
         tmp.rename(p)
         self.m.inc("spooled", len(batch))
 
+    def _expire_spool(self) -> None:
+        """Delete spooled batches older than SPOOL_MAX_AGE (stale comments are not worth sending)."""
+        age = self.s.spool_max_age
+        if age <= 0:
+            return
+        now = time.time()
+        for p in self._spool.glob("*.jsonl"):
+            try:
+                if now - p.stat().st_mtime <= age:
+                    continue
+                n = sum(1 for x in p.read_text().splitlines() if x.strip())
+                p.unlink(missing_ok=True)
+            except OSError:
+                continue
+            self.m.inc("spool_expired", n)
+            self.m.warn("spool_expired", f"spool: dropped batch older than {age:.0f}s", 60)
+
     async def _replay_loop(self) -> None:
         while True:
             await asyncio.sleep(15)
+            self._expire_spool()
             if time.monotonic() < self._open_until:
                 continue
             for p in sorted(self._spool.glob("*.jsonl"))[:20]:

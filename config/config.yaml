@@ -26,6 +26,7 @@ interval_min: 0.6
 interval_max: 3.0
 queue_max: 5000
 spool_max_files: 2000
+spool_max_age: 1800      # sec; older spooled batches are deleted (0 = keep)
 metrics_interval: 30
 vpn_port_base: 21000
 vpn_test_interval: 600   # re-test all nodes, sec

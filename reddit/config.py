@@ -41,6 +41,7 @@ class Settings:
     interval_max: float = 3.0
     queue_max: int = 5000
     spool_max_files: int = 2000
+    spool_max_age: float = 1800.0       # spooled batches older than this (sec) are deleted; 0 = keep forever
     metrics_interval: float = 30.0
     data_dir: str = "data"
     # VPN manager (active when vpn_sub_url is set and urlcheck_proxy is empty)
@@ -90,6 +91,7 @@ _NODE_KEYS = {  # attr -> type
     "node_popular_share": float, "node_fallback_direct": bool, "node_state_ttl": float, "node_max_per_min": int, "node_profiles": list,
     "max_items_per_sec": float, "max_pages_per_sec": float, "max_gb_per_day": float,
     "urlcheck_concurrency": int, "urlcheck_parallel": int, "urlcheck_retries": int, "target_rate": float, "buffer_seconds": float,
+    "spool_max_age": float,
 }
 
 
