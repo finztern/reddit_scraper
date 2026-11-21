@@ -23,6 +23,13 @@ class Sampler:
         self._t = time.monotonic()
         self._t0 = time.monotonic()
 
+    def _gv(self, name: str) -> float:
+        fn = self.m.gauges.get(name)
+        try:
+            return float(str(fn())) if fn else 0.0
+        except Exception:  # noqa: BLE001
+            return 0.0
+
     def sample(self) -> dict:
         now = time.monotonic()
         dt = max(now - self._t, 1e-6)
@@ -37,6 +44,7 @@ class Sampler:
             "rep": pct(d["dup"], d["dup"] + d["unique"]), "mbs": round(d["bytes"] / 1e6 / dt, 3),
             "e403": d["http_403"], "e429": d["http_429"], "efetch": d["fetch_err"],
             "estore": d["store_err"], "euc": d["uc_err"],
+            "queue": self._gv("queue"), "buf": self._gv("buf"),
         }
         self._snap, self._t = cur, now
         self.points.append(p)
@@ -96,11 +104,13 @@ PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px system-ui,sans-serif;padding:16px;max-width:1400px;margin:auto}
 header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}h1{font-size:18px;margin:0}
 #st{color:var(--mu);font-size:12px}#st i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--g);margin-right:6px}
-.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px}
-.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
-.card b{display:block;font-size:24px;font-variant-numeric:tabular-nums;margin-top:2px}.card span{color:var(--mu);font-size:12px}
-.charts{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(420px,1fr))}
-@media(max-width:480px){.charts{grid-template-columns:1fr}}
+.grid{display:grid;gap:10px;grid-template-columns:repeat(8,1fr);margin-bottom:10px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px;min-width:0}
+.card b{display:block;font-size:22px;font-variant-numeric:tabular-nums;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.card span{color:var(--mu);font-size:12px;white-space:nowrap}
+.charts{display:grid;gap:10px;grid-template-columns:repeat(3,1fr);margin-bottom:10px}
+.two{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(420px,1fr))}
+@media(max-width:1000px){.grid{grid-template-columns:repeat(4,1fr)}.charts{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:600px){.grid{grid-template-columns:repeat(2,1fr)}.charts,.two{grid-template-columns:1fr}}
 .ch h3{margin:0 0 6px;font-size:13px;font-weight:600}.lg{font-size:11px;color:var(--mu)}.lg u{text-decoration:none;margin-right:10px}
 canvas{width:100%;height:150px;display:block}
 table{width:100%;border-collapse:collapse;font-size:13px}td{padding:3px 0;border-bottom:1px solid var(--bd)}td:last-child{text-align:right;font-variant-numeric:tabular-nums}
@@ -109,7 +119,7 @@ table{width:100%;border-collapse:collapse;font-size:13px}td{padding:3px 0;border
 <header><h1>reddit_scraper</h1><div id="st"><i></i><span id="up">connecting…</span></div></header>
 <div class="grid" id="cards"></div>
 <div class="charts" id="charts"></div>
-<div class="charts" style="margin-top:10px"><div class="card"><h3 style="margin:0 0 6px;font-size:13px">Filtered (total)</h3><table id="flt"></table></div>
+<div class="two"><div class="card"><h3 style="margin:0 0 6px;font-size:13px">Filtered (total)</h3><table id="flt"></table></div>
 <div class="card"><h3 style="margin:0 0 6px;font-size:13px">Totals &amp; gauges</h3><table id="tot"></table></div></div>
 <script>
 const C={g:'#3fb950',b:'#58a6ff',o:'#f0883e',r:'#f85149',p:'#bc8cff',y:'#d29922'};
@@ -118,6 +128,7 @@ const CH=[
  {t:'pages/s · comments/s',s:[['pages','pages/s',C.o],['comments','comments/s',C.p]]},
  {t:'empty % · url-check known % · repeats %',s:[['empty','empty%',C.y],['known','known%',C.b],['rep','rep%',C.p]],max:100},
  {t:'errors per 2 s',s:[['e403','403',C.r],['e429','429',C.o],['efetch','fetch',C.y],['estore','store',C.p],['euc','url-check',C.b]]},
+ {t:'backlog: queue · buf (items)',s:[['queue','queue',C.o],['buf','buf',C.g]]},
  {t:'traffic MB/s',s:[['mbs','MB/s',C.g]]}];
 const $=id=>document.getElementById(id);
 $('charts').innerHTML=CH.map((c,i)=>`<div class="card ch"><h3>${c.t}</h3><canvas id="c${i}"></canvas><div class="lg">${c.s.map(x=>`<u style="color:${x[2]}">● ${x[1]}</u>`).join('')}</div></div>`).join('');
@@ -133,19 +144,21 @@ function draw(cv,pts,c){const dpr=devicePixelRatio||1,w=cv.clientWidth,h=cv.clie
 const avg=(a,k)=>a.length?a.reduce((s,p)=>s+(p[k]||0),0)/a.length:0;
 const fmt=n=>n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(n);
 const dur=s=>`${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m ${s%60}s`;
-async function tick(){try{const d=await (await fetch('/api')).json();const P=d.points,L=P.slice(-15),T=d.totals,G=d.gauges;
+async function tick(){try{const d=await (await fetch('/api')).json();const P=d.points,L=P.slice(-15),G=d.gauges;
  $('up').textContent='live · uptime '+dur(d.uptime);
- const newS=avg(L,'new'),emp=avg(L,'empty'),e=(k)=>L.reduce((s,p)=>s+(p[k]||0),0);
- const cards=[['new/s',newS.toFixed(1),newS>=10?'ok':'warn'],['sent/s',avg(L,'sent').toFixed(1),''],['pages/s',avg(L,'pages').toFixed(2),''],
- ['comments/s',avg(L,'comments').toFixed(0),''],['empty %',emp.toFixed(0),emp>40?'bad':emp>25?'warn':'ok'],['known % (url-check)',avg(L,'known').toFixed(0),''],
- ['repeats %',avg(L,'rep').toFixed(0),''],['403 / 429 (30 s)',e('e403')+' / '+e('e429'),e('e403')+e('e429')?'warn':'ok'],
- ['store err (30 s)',e('estore'),e('estore')?'bad':'ok'],['url-check err (30 s)',e('euc'),e('euc')?'bad':'ok'],
- ...Object.entries(G).map(([k,v])=>[k,v,''])];
+ const g=k=>G[k]??'—',newS=avg(L,'new'),emp=avg(L,'empty'),e=(k)=>L.reduce((s,p)=>s+(p[k]||0),0);
+ const eb=e('estore')+e('euc');
+ const cards=[
+ ['new/s',newS.toFixed(1),newS>=10?'ok':'warn'],['sent/s',avg(L,'sent').toFixed(1),''],['pages/s',avg(L,'pages').toFixed(2),''],['comments/s',avg(L,'comments').toFixed(0),''],
+ ['empty %',emp.toFixed(0),emp>40?'bad':emp>25?'warn':'ok'],['known % (url-check)',avg(L,'known').toFixed(0),''],['repeats %',avg(L,'rep').toFixed(0),''],
+ ['403 / 429 (30 s)',e('e403')+' / '+e('e429'),e('e403')+e('e429')?'warn':'ok'],
+ ['store / url-check err',e('estore')+' / '+e('euc'),eb?'bad':'ok'],['queue',g('queue'),''],['buf',g('buf'),''],['rate (target)',g('rate'),''],
+ ['url-check latency, s',g('uc_lat'),''],['nodes good/total',g('nodes'),''],['iv s · pop share',g('iv')+' · '+g('pop'),''],['GB / day',g('gb_day'),'']];
  $('cards').innerHTML=cards.map(c=>`<div class="card"><span>${c[0]}</span><b class="${c[2]}">${c[1]}</b></div>`).join('');
  CH.forEach((c,i)=>draw($('c'+i),P,c));
  const f=Object.entries(d.filtered).sort((a,b)=>b[1]-a[1]);
  $('flt').innerHTML=f.length?f.map(([k,v])=>`<tr><td>${k}</td><td>${fmt(v)}</td></tr>`).join(''):'<tr><td>—</td><td></td></tr>';
- $('tot').innerHTML=Object.entries(T).map(([k,v])=>`<tr><td>${k}</td><td>${fmt(v)}</td></tr>`).join('');
+ $('tot').innerHTML=Object.entries(d.totals).map(([k,v])=>`<tr><td>${k}</td><td>${fmt(v)}</td></tr>`).join('');
  }catch(e){$('up').textContent='disconnected'}}
 tick();setInterval(tick,2000);addEventListener('resize',tick);
 </script></body></html>"""
