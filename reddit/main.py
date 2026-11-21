@@ -11,6 +11,7 @@ from .autotune import AutoTuner
 from .http_client import HttpClient
 from .limits import PageGate, TokenBucket, TrafficBudget
 from .metrics import Metrics
+from .dashboard import Sampler, serve as serve_dashboard
 from .demand import DemandGate
 from .node_pool import NodePool
 from .pipeline import make_on_page
@@ -128,6 +129,9 @@ async def amain() -> None:
             await asyncio.sleep(s.metrics_interval)
 
     tasks = [asyncio.create_task(ticker()), asyncio.create_task(rt.watch())]
+    if s.dash_port > 0:
+        sampler = Sampler(m)
+        tasks += [asyncio.create_task(sampler.run()), asyncio.create_task(serve_dashboard(sampler, s.dash_host, s.dash_port))]
     if vpn:
         tasks.append(asyncio.create_task(vpn.run()))
     try:

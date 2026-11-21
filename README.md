@@ -76,3 +76,6 @@ Edit the file and save: picked up within ~2 s (`docker compose logs | grep runti
 - `NODE_MAX_PER_MIN=6`: hard per-node ceiling (any 60 s window), independent of demand/autotune. Capacity ~ nodes*cap/60 pages/s.
 - TLS profile is fixed per node (the one that passed the scan); it is never rotated mid-session.
 - `NODE_INTERVAL_MIN` = `NODE_INTERVAL` (5 s): autotune never polls faster than the base, it only backs off on 429/403 and returns to the base.
+
+## Dashboard
+Live web page with all metrics: `http://127.0.0.1:8080` (`DASH_HOST`, `DASH_PORT`; 0 = off). JSON: `/api`. Host network, no port mapping needed.

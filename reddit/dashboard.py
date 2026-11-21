@@ -1,0 +1,151 @@
+"""Built-in web dashboard: samples Metrics every 2 s, serves a live page (/) and JSON (/api). No extra deps."""
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import time
+from collections import deque
+
+from .metrics import Metrics
+
+log = logging.getLogger("dashboard")
+
+KEYS = ("pages", "pages_empty", "comments", "unique", "dup", "sent", "http_403", "http_429", "fetch_err",
+        "store_err", "uc_err", "uc_in", "uc_known", "spooled", "bytes", "pages_cold403", "node_quarantine")
+
+
+class Sampler:
+    def __init__(self, m: Metrics, every: float = 2.0, keep: int = 450) -> None:
+        self.m, self.every = m, every
+        self.points: deque[dict] = deque(maxlen=keep)
+        self._snap = {k: 0 for k in KEYS}
+        self._t = time.monotonic()
+        self._t0 = time.monotonic()
+
+    def sample(self) -> dict:
+        now = time.monotonic()
+        dt = max(now - self._t, 1e-6)
+        cur = {k: self.m.c[k] for k in KEYS}
+        d = {k: cur[k] - self._snap[k] for k in KEYS}
+        pct = lambda a, b: round(100.0 * a / b, 1) if b else 0.0  # noqa: E731
+        p = {
+            "t": int(time.time()),
+            "new": round(d["unique"] / dt, 2), "sent": round(d["sent"] / dt, 2),
+            "pages": round(d["pages"] / dt, 2), "comments": round(d["comments"] / dt, 1),
+            "empty": pct(d["pages_empty"], d["pages"]), "known": pct(d["uc_known"], d["uc_in"]),
+            "rep": pct(d["dup"], d["dup"] + d["unique"]), "mbs": round(d["bytes"] / 1e6 / dt, 3),
+            "e403": d["http_403"], "e429": d["http_429"], "efetch": d["fetch_err"],
+            "estore": d["store_err"], "euc": d["uc_err"],
+        }
+        self._snap, self._t = cur, now
+        self.points.append(p)
+        return p
+
+    def state(self) -> dict:
+        g = {}
+        for k, fn in self.m.gauges.items():
+            try:
+                g[k] = str(fn())
+            except Exception:  # noqa: BLE001
+                g[k] = "?"
+        return {"uptime": int(time.monotonic() - self._t0), "points": list(self.points),
+                "totals": {k: self.m.c[k] for k in KEYS}, "filtered": dict(self.m.filtered), "gauges": g}
+
+    async def run(self) -> None:
+        while True:
+            await asyncio.sleep(self.every)
+            self.sample()
+
+
+async def serve(sampler: Sampler, host: str, port: int) -> None:
+    async def handle(r: asyncio.StreamReader, w: asyncio.StreamWriter) -> None:
+        try:
+            line = (await asyncio.wait_for(r.readline(), 5)).decode("latin1").split()
+            while (await asyncio.wait_for(r.readline(), 5)) not in (b"\r\n", b"\n", b""):
+                pass
+            path = line[1].split("?")[0] if len(line) > 1 else "/"
+            if path == "/api":
+                body, ctype, code = json.dumps(sampler.state()).encode(), "application/json", "200 OK"
+            elif path == "/":
+                body, ctype, code = PAGE.encode(), "text/html; charset=utf-8", "200 OK"
+            else:
+                body, ctype, code = b"not found", "text/plain", "404 Not Found"
+            w.write(f"HTTP/1.1 {code}\r\nContent-Type: {ctype}\r\nContent-Length: {len(body)}\r\n"
+                    f"Cache-Control: no-store\r\nConnection: close\r\n\r\n".encode() + body)
+            await w.drain()
+        except Exception:  # noqa: BLE001
+            pass
+        finally:
+            w.close()
+
+    try:
+        srv = await asyncio.start_server(handle, host, port)
+    except OSError as e:
+        log.warning("dashboard not started: %s", e)
+        return
+    log.info("dashboard: http://%s:%d", host, port)
+    async with srv:
+        await srv.serve_forever()
+
+
+PAGE = r"""<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>reddit_scraper</title><style>
+:root{--bg:#0e1117;--card:#161b22;--bd:#262d38;--tx:#e6edf3;--mu:#8b949e;--g:#3fb950;--b:#58a6ff;--o:#f0883e;--r:#f85149;--p:#bc8cff;--y:#d29922}
+@media(prefers-color-scheme:light){:root{--bg:#f6f8fa;--card:#fff;--bd:#d0d7de;--tx:#1f2328;--mu:#656d76}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--tx);font:14px system-ui,sans-serif;padding:16px;max-width:1400px;margin:auto}
+header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px}h1{font-size:18px;margin:0}
+#st{color:var(--mu);font-size:12px}#st i{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--g);margin-right:6px}
+.grid{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:14px}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:10px 12px}
+.card b{display:block;font-size:24px;font-variant-numeric:tabular-nums;margin-top:2px}.card span{color:var(--mu);font-size:12px}
+.charts{display:grid;gap:10px;grid-template-columns:repeat(auto-fit,minmax(420px,1fr))}
+@media(max-width:480px){.charts{grid-template-columns:1fr}}
+.ch h3{margin:0 0 6px;font-size:13px;font-weight:600}.lg{font-size:11px;color:var(--mu)}.lg u{text-decoration:none;margin-right:10px}
+canvas{width:100%;height:150px;display:block}
+table{width:100%;border-collapse:collapse;font-size:13px}td{padding:3px 0;border-bottom:1px solid var(--bd)}td:last-child{text-align:right;font-variant-numeric:tabular-nums}
+.bad{color:var(--r)}.ok{color:var(--g)}.warn{color:var(--y)}
+</style></head><body>
+<header><h1>reddit_scraper</h1><div id="st"><i></i><span id="up">connecting…</span></div></header>
+<div class="grid" id="cards"></div>
+<div class="charts" id="charts"></div>
+<div class="charts" style="margin-top:10px"><div class="card"><h3 style="margin:0 0 6px;font-size:13px">Filtered (total)</h3><table id="flt"></table></div>
+<div class="card"><h3 style="margin:0 0 6px;font-size:13px">Totals &amp; gauges</h3><table id="tot"></table></div></div>
+<script>
+const C={g:'#3fb950',b:'#58a6ff',o:'#f0883e',r:'#f85149',p:'#bc8cff',y:'#d29922'};
+const CH=[
+ {t:'new/s vs sent/s',s:[['new','new/s',C.g],['sent','sent/s',C.b]]},
+ {t:'pages/s · comments/s',s:[['pages','pages/s',C.o],['comments','comments/s',C.p]]},
+ {t:'empty % · url-check known % · repeats %',s:[['empty','empty%',C.y],['known','known%',C.b],['rep','rep%',C.p]],max:100},
+ {t:'errors per 2 s',s:[['e403','403',C.r],['e429','429',C.o],['efetch','fetch',C.y],['estore','store',C.p],['euc','url-check',C.b]]},
+ {t:'traffic MB/s',s:[['mbs','MB/s',C.g]]}];
+const $=id=>document.getElementById(id);
+$('charts').innerHTML=CH.map((c,i)=>`<div class="card ch"><h3>${c.t}</h3><canvas id="c${i}"></canvas><div class="lg">${c.s.map(x=>`<u style="color:${x[2]}">● ${x[1]}</u>`).join('')}</div></div>`).join('');
+function draw(cv,pts,c){const dpr=devicePixelRatio||1,w=cv.clientWidth,h=cv.clientHeight;cv.width=w*dpr;cv.height=h*dpr;
+ const x=cv.getContext('2d');x.scale(dpr,dpr);x.clearRect(0,0,w,h);const st=getComputedStyle(document.body);
+ let mx=c.max||Math.max(1e-9,...pts.flatMap(p=>c.s.map(s=>p[s[0]]||0)));mx*=1.1;const L=34,B=14;
+ x.font='10px system-ui';x.fillStyle=st.getPropertyValue('--mu');x.strokeStyle=st.getPropertyValue('--bd');
+ for(let i=0;i<=3;i++){const y=4+(h-B-4)*i/3;x.beginPath();x.moveTo(L,y);x.lineTo(w,y);x.stroke();x.fillText((mx*(1-i/3)).toFixed(mx<10?1:0),0,y+3)}
+ if(pts.length<2)return;const n=pts.length;
+ c.s.forEach(s=>{x.beginPath();x.strokeStyle=s[2];x.lineWidth=1.6;pts.forEach((p,i)=>{const X=L+(w-L)*i/(n-1),Y=4+(h-B-4)*(1-(p[s[0]]||0)/mx);i?x.lineTo(X,Y):x.moveTo(X,Y)});x.stroke()});
+ const t0=new Date(pts[0].t*1000),t1=new Date(pts[n-1].t*1000);x.fillStyle=st.getPropertyValue('--mu');
+ x.fillText(t0.toLocaleTimeString(),L,h-2);x.textAlign='right';x.fillText(t1.toLocaleTimeString(),w,h-2);x.textAlign='left'}
+const avg=(a,k)=>a.length?a.reduce((s,p)=>s+(p[k]||0),0)/a.length:0;
+const fmt=n=>n>=1e6?(n/1e6).toFixed(2)+'M':n>=1e3?(n/1e3).toFixed(1)+'k':String(n);
+const dur=s=>`${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m ${s%60}s`;
+async function tick(){try{const d=await (await fetch('/api')).json();const P=d.points,L=P.slice(-15),T=d.totals,G=d.gauges;
+ $('up').textContent='live · uptime '+dur(d.uptime);
+ const newS=avg(L,'new'),emp=avg(L,'empty'),e=(k)=>L.reduce((s,p)=>s+(p[k]||0),0);
+ const cards=[['new/s',newS.toFixed(1),newS>=10?'ok':'warn'],['sent/s',avg(L,'sent').toFixed(1),''],['pages/s',avg(L,'pages').toFixed(2),''],
+ ['comments/s',avg(L,'comments').toFixed(0),''],['empty %',emp.toFixed(0),emp>40?'bad':emp>25?'warn':'ok'],['known % (url-check)',avg(L,'known').toFixed(0),''],
+ ['repeats %',avg(L,'rep').toFixed(0),''],['403 / 429 (30 s)',e('e403')+' / '+e('e429'),e('e403')+e('e429')?'warn':'ok'],
+ ['store err (30 s)',e('estore'),e('estore')?'bad':'ok'],['url-check err (30 s)',e('euc'),e('euc')?'bad':'ok'],
+ ...Object.entries(G).map(([k,v])=>[k,v,''])];
+ $('cards').innerHTML=cards.map(c=>`<div class="card"><span>${c[0]}</span><b class="${c[2]}">${c[1]}</b></div>`).join('');
+ CH.forEach((c,i)=>draw($('c'+i),P,c));
+ const f=Object.entries(d.filtered).sort((a,b)=>b[1]-a[1]);
+ $('flt').innerHTML=f.length?f.map(([k,v])=>`<tr><td>${k}</td><td>${fmt(v)}</td></tr>`).join(''):'<tr><td>—</td><td></td></tr>';
+ $('tot').innerHTML=Object.entries(T).map(([k,v])=>`<tr><td>${k}</td><td>${fmt(v)}</td></tr>`).join('');
+ }catch(e){$('up').textContent='disconnected'}}
+tick();setInterval(tick,2000);addEventListener('resize',tick);
+</script></body></html>"""

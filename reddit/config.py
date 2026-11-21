@@ -71,6 +71,8 @@ class Settings:
     max_items_per_sec: float = 0.0       # 0 = unlimited
     max_pages_per_sec: float = 0.0
     max_gb_per_day: float = 0.0
+    dash_host: str = "127.0.0.1"        # DASH_HOST=0.0.0.0 to open from other machines
+    dash_port: int = 8080                # 0 = dashboard off
     target_rate: float = 0.0             # initial value; config/runtime.yaml overrides and hot-reloads
     buffer_seconds: float = 5.0
 
@@ -152,6 +154,8 @@ def load() -> Settings:
     s.vpn_test_interval = float(e("VPN_TEST_INTERVAL", s.vpn_test_interval))
     s.vpn_sub_refresh = float(e("VPN_SUB_REFRESH", s.vpn_sub_refresh))
     s.data_dir = e("DATA_DIR", s.data_dir)
+    s.dash_host = e("DASH_HOST", s.dash_host)
+    s.dash_port = int(e("DASH_PORT", s.dash_port))
     for attr, typ in _NODE_KEYS.items():
         if attr in y:
             setattr(s, attr, _conv(typ, y[attr]))
