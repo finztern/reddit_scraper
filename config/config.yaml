@@ -1,6 +1,6 @@
 # Defaults; env vars override these. No secrets here.
 store_endpoint: "http://127.0.0.1:9000/store_items"
-urlcheck_policy: closed
+urlcheck_policy: open   # open = url-check down -> send unchecked; closed = retry forever
 subs: [AskReddit, politics, worldnews, news, funny, pics, gaming, memes, mildlyinfuriating, movies,
        Showerthoughts, interestingasfuck, todayilearned, science, technology, sports, nba, soccer, nfl,
        AmItheAsshole, teenagers, relationship_advice, unpopularopinion, Damnthatsinteresting, PublicFreakout,
@@ -31,6 +31,8 @@ vpn_port_base: 21000
 vpn_test_interval: 600   # re-test all nodes, sec
 vpn_sub_refresh: 3600    # re-download subscription, sec
 vpn_switch_gain: 0.8     # switch only if new best latency < current * this
+urlcheck_parallel: 2      # 2 independent requests per batch via the 2 fastest nodes
+urlcheck_retries: 1
 urlcheck_concurrency: 4   # parallel url-check batches
 # ---- nodes mode (SOURCE_MODE=nodes needs VPN_SUB_URL in .env) ----
 source_mode: direct       # direct | nodes

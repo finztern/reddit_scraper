@@ -51,6 +51,8 @@ class Settings:
     vpn_sub_refresh: float = 3600.0
     vpn_switch_gain: float = 0.8
     urlcheck_concurrency: int = 4
+    urlcheck_parallel: int = 2          # independent url-check requests per batch (fastest nodes)
+    urlcheck_retries: int = 1           # extra rounds before URLCHECK_POLICY applies
     # nodes mode
     source_mode: str = "direct"          # direct | nodes
     node_interval: float = 5.0
@@ -87,7 +89,7 @@ _NODE_KEYS = {  # attr -> type
     "node_scan_concurrency": int, "node_quarantine": float, "node_rescan": float, "node_min_good": int,
     "node_popular_share": float, "node_fallback_direct": bool, "node_state_ttl": float, "node_max_per_min": int, "node_profiles": list,
     "max_items_per_sec": float, "max_pages_per_sec": float, "max_gb_per_day": float,
-    "urlcheck_concurrency": int, "target_rate": float, "buffer_seconds": float,
+    "urlcheck_concurrency": int, "urlcheck_parallel": int, "urlcheck_retries": int, "target_rate": float, "buffer_seconds": float,
 }
 
 

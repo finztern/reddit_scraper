@@ -58,7 +58,9 @@ async def amain() -> None:
         proxy_getter, on_fail = (lambda: None), None
         log.warning("no URLCHECK_PROXY / VPN_SUB_URL / VPN_NODES_FILE: url-check goes direct")
     checker = UrlChecker(s.urlcheck_url, proxy_getter, s.urlcheck_policy, on_fail,
-                         direct=not (s.urlcheck_proxy or vpn_src))
+                         direct=not (s.urlcheck_proxy or vpn_src),
+                         proxies_getter=(lambda: vpn.proxies(s.urlcheck_parallel)) if (vpn and not s.urlcheck_proxy) else None,
+                         retries=s.urlcheck_retries)
     m.gauges["uc_lat"] = lambda: f"{checker.median_latency():.2f}"
     rt = RuntimeConfig(Path(config.CONFIG_PATH).parent / "runtime.yaml", s.target_rate, s.buffer_seconds)
     sender = Sender(s, seen, m, checker, rate_fn=lambda: rt.target_rate)

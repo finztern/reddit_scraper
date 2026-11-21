@@ -149,10 +149,25 @@ class VpnManager:
                 return f"socks5h://127.0.0.1:{self._base + i}"
         return None
 
+    def proxies(self, n: int = 2) -> list[str]:
+        """SOCKS urls of the n fastest alive nodes (fastest first)."""
+        idx = {nd.key: i for i, nd in enumerate(self._nodes)}
+        alive = sorted((k for k in self._lat if k in idx), key=self._lat.get)[:n]
+        return [f"socks5h://127.0.0.1:{self._base + idx[k]}" for k in alive]
+
+    def _key_of(self, proxy: str) -> str | None:
+        for i, nd in enumerate(self._nodes):
+            if proxy == f"socks5h://127.0.0.1:{self._base + i}":
+                return nd.key
+        return None
+
     def report_failure(self, proxy: str | None = None) -> None:
         """url-check failed through `proxy` (default: current): drop that node and re-test soon.
         A failure reported for an already replaced node is ignored (parallel batches fail together)."""
         if proxy is not None and proxy != self.proxy():
+            k = self._key_of(proxy)  # non-current node (parallel url-check): just drop it
+            if k is not None:
+                self._lat.pop(k, None)
             return
         if self._cur:
             self._lat.pop(self._cur, None)

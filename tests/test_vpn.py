@@ -37,3 +37,15 @@ def test_report_failure_ignores_stale_proxy():
     assert v.proxy() != old and len(v._lat) == 1
     v.report_failure(old)                   # stale report from a parallel batch: ignored
     assert len(v._lat) == 1
+
+
+def test_proxies_top2_and_second_failure():
+    from reddit.vpn import VpnManager
+    v = VpnManager("", "/tmp", "http://x")
+    v._nodes = parse_subscription(URI + "\n" + URI2)
+    v._lat = {n.key: 0.1 * (i + 1) for i, n in enumerate(v._nodes)}
+    v._cur = v._nodes[0].key
+    p = v.proxies(2)
+    assert len(p) == 2 and p[0] == v.proxy()
+    v.report_failure(p[1])           # second (non-current) node failed: dropped, current stays
+    assert len(v._lat) == 1 and v.proxy() == p[0]
