@@ -9,6 +9,7 @@ import random
 import re
 import statistics
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -86,6 +87,7 @@ class NodeState:
         self.errs = 0
         self.warm = False        # session got at least one good page
         self.quarantined = False
+        self.hist: deque[float] = deque()  # start times of the last requests (per-minute ceiling)
 
     @property
     def active(self) -> bool:
@@ -102,6 +104,7 @@ class NodePool:
         self._factory = client_factory or (lambda port, prof: NodeClient(port, prof, s.connect_timeout, s.read_timeout))
         self.nodes: dict[str, NodeState] = {}
         self._wall = time.time
+        self._mono = time.monotonic
         self._state_path = Path(state_path) if state_path else None
         self._state: dict[str, dict] = self._load_state()
         self.stop = asyncio.Event()
@@ -120,6 +123,16 @@ class NodePool:
             await asyncio.wait_for(self.stop.wait(), timeout=sec)
         except asyncio.TimeoutError:
             pass
+
+    def _cap_wait(self, n: NodeState) -> float:
+        """Seconds to wait so that the node never exceeds NODE_MAX_PER_MIN requests in any 60 s window."""
+        cap = self.s.node_max_per_min
+        if cap <= 0:
+            return 0.0
+        now = self._mono()
+        while n.hist and now - n.hist[0] >= 60.0:
+            n.hist.popleft()
+        return 60.0 - (now - n.hist[0]) if len(n.hist) >= cap else 0.0
 
     def good_count(self) -> int:
         return sum(1 for n in self.nodes.values() if n.active and not n.quarantined)
@@ -272,6 +285,10 @@ class NodePool:
                 self.m.warn("gb_cap", "nodepool: MAX_GB_PER_DAY reached, paused", 60)
                 await self._sleep(30)
                 continue
+            wait = self._cap_wait(n)  # per-node ceiling first: do not hold a demand ticket while waiting
+            if wait > 0:
+                await self._sleep(wait)
+                continue
             if self.gate:
                 await self.gate.wait()
             tk = await self.demand.acquire(self.stop) if self.demand else NO_TICKET  # fetch only when the buffer needs it
@@ -287,6 +304,7 @@ class NodePool:
         s, m = self.s, self.m
         t0 = time.monotonic()
         url = self.picker.pick_share(self.tuner.share)
+        n.hist.append(self._mono())
         try:
             status, text, nb = await n.client.fetch(url)
         except asyncio.CancelledError:
@@ -341,8 +359,7 @@ class NodePool:
             if n.bad_streak >= 4:
                 await self._quarantine(n)
                 return
-            if n.bad_streak == 2:
-                n.client.rotate_profile()  # same session, other TLS profile
+            # TLS profile stays constant per node (a fingerprint that flips mid-session looks unnatural)
             await self._sleep(2 + 4 * min(n.bad_streak - 1, 5))  # retry in the SAME session
             return
         elif status == 429:

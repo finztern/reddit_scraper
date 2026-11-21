@@ -21,13 +21,14 @@ class FakeClient:
     """Scripted responses: list of (status, text); the last one repeats."""
 
     def __init__(self, script):
-        self.script, self.calls, self.resets, self.profile = list(script), 0, 0, "safari"
+        self.script, self.calls, self.resets, self.profile, self.rotations = list(script), 0, 0, "safari", 0
         self.last_headers = {}
 
     def set_profile(self, p):
         self.profile = p
 
     def rotate_profile(self):
+        self.rotations += 1
         self.profile = "chrome" if self.profile == "safari" else "safari"
 
     async def fetch(self, url):
@@ -54,6 +55,7 @@ class FakeVpn:
 def mk_pool(clients: dict[int, FakeClient]):
     s = Settings()
     s.node_profiles = ["safari", "chrome"]
+    s.node_max_per_min = 0  # per-node ceiling has its own test
     m = Metrics()
 
     async def on_page(t, u=""):
@@ -108,6 +110,7 @@ def test_403_keeps_session_then_quarantine_and_return():
         assert {2, 6, 10} <= set(sleeps)     # same-session retry delays
         assert m.c["node_quarantine"] == 1
         assert pool.nodes["k1"].bad_streak == 0
+        assert c.rotations == 0              # TLS profile never flips
     asyncio.run(go())
 
 
@@ -288,3 +291,40 @@ def test_restored_quarantine_is_respected(tmp_path):
         await asyncio.gather(*(n.task for n in pool.nodes.values() if n.task), return_exceptions=True)
         assert any(290 <= x <= 300 for x in sleeps)                  # rests the remaining time first
     asyncio.run(go())
+
+
+def test_per_node_ceiling_per_minute():
+    async def go():
+        clock = [1000.0]
+        times: list[float] = []
+
+        class C(FakeClient):
+            async def fetch(self, url):
+                times.append(clock[0])
+                return await super().fetch(url)
+
+        c = C([(200, FULL)])
+        pool, m, _ = mk_pool({1: c})
+        pool.s.node_max_per_min = 3
+        pool._mono = lambda: clock[0]
+
+        async def fs(sec):
+            clock[0] += sec
+            await asyncio.sleep(0)
+
+        pool._sleep = fs
+        await run_pool(pool, lambda: len(times) >= 25)
+        worker = times[1:]                                       # first call is the scan
+        for i, t0 in enumerate(worker):
+            assert sum(1 for t in worker[i:] if t - t0 < 60) <= 3  # never >3 requests in 60 s
+    asyncio.run(go())
+
+
+def test_interval_recovers_when_demand_limited():
+    a = AutoTuner(5.0, 5.0, 15, 0.5)
+    a.probe = False
+    assert a.step(Window(pages=100, c429=20)) == "up" and a.interval == pytest.approx(6.25)
+    assert a.step(Window(pages=100)) == "recover" and a.interval == pytest.approx(5.625)
+    assert a.step(Window(pages=100)) == "recover" and a.interval == pytest.approx(5.0625)
+    assert a.step(Window(pages=100)) == "recover" and a.interval == pytest.approx(5.0)
+    assert a.step(Window(pages=100)) == "hold"                   # never below the base

@@ -47,6 +47,7 @@ class AutoTuner:
         self.enabled = enabled
         self.imin, self.imax = imin, imax
         self.interval = min(max(interval, imin), imax)
+        self.base = self.interval  # recover towards this after a back-off
         self.share = min(max(share, 0.2), 0.7) if enabled else share
         self.fixed_until = 0.0
         self.probe = True  # False when output is demand-limited (target_rate): no hill-climb downwards
@@ -88,6 +89,11 @@ class AutoTuner:
             self._pending = None
             self.interval = min(self.interval * self.UP, self.imax)
             return "up"
+        if not self.probe:  # demand-limited: never speed up, only return to the base after a back-off
+            if thr < 0.03 and emp < 0.25 and self.interval > self.base:
+                self.interval = max(self.base, self.interval * self.DOWN)
+                return "recover"
+            return "hold"
         if self._pending:
             p = self._pending
             p.acc.append(w.new_s)
