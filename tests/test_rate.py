@@ -91,3 +91,29 @@ def test_sender_paces_output_evenly(tmp_path):
         task.cancel()
         await snd._client.aclose()
     asyncio.run(go())
+
+
+def test_demand_gate_admits_in_arrival_order():
+    async def go():
+        sd = FakeSender()
+        sd.p = 10_000                                        # buffer full: everybody waits
+        g = DemandGate(sd, lambda: 50.0, lambda: 5.0)
+        g.avg_new = 250.0                                    # one in-flight request fills the demand
+        order, tickets = [], []
+
+        async def worker(name):
+            tk = await g.acquire()
+            order.append(name)
+            tickets.append(tk)
+
+        tasks = []
+        for name in "abcd":
+            tasks.append(asyncio.create_task(worker(name)))
+            await asyncio.sleep(0.01)                        # arrival order a, b, c, d
+        sd.p = 0
+        for _ in range(4):
+            await asyncio.sleep(0.3)
+            tickets[-1].done()
+        await asyncio.gather(*tasks)
+        assert order == list("abcd")
+    asyncio.run(go())

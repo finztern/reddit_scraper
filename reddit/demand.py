@@ -27,6 +27,7 @@ class DemandGate:
     def __init__(self, sender, rate_fn: Callable[[], float], buf_fn: Callable[[], float]) -> None:
         self.sender, self.rate_fn, self.buf_fn = sender, rate_fn, buf_fn
         self.inflight = 0
+        self._turn = asyncio.Lock()
         self.avg_new = 30.0  # EMA of unique comments per page (before url-check)
 
     def enabled(self) -> bool:
@@ -43,11 +44,15 @@ class DemandGate:
         return self.sender.pending() + expected < self.high()
 
     async def acquire(self, stop: asyncio.Event | None = None) -> Ticket:
+        """Admit workers strictly in arrival order (asyncio.Lock is FIFO) = the longest-idle node/IP goes first,
+        so a limited demand is spread evenly and every node is polled as rarely as possible."""
         while self.enabled():
             if stop is not None and stop.is_set():
                 break
-            if self._ok():
-                self.inflight += 1
-                return Ticket(self)
-            await asyncio.sleep(random.uniform(0.1, 0.3))
+            async with self._turn:
+                while self.enabled() and not (stop is not None and stop.is_set()):
+                    if self._ok():
+                        self.inflight += 1
+                        return Ticket(self)
+                    await asyncio.sleep(random.uniform(0.05, 0.15))
         return NO_TICKET
