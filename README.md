@@ -36,3 +36,21 @@ Check url-check answer format: `docker compose run --rm parser python scripts/ch
 - `docker compose logs parser | grep vpn` -> "vpn test: N/M alive", "vpn: using <node>"
 - log line: `new/s` >= 10, `uc_known` low, `store_err=0`, `queue` stable
 - stop collector 1 min -> `spooled` grows, process alive; start it -> spool drains
+
+## Nodes mode (`SOURCE_MODE=nodes`)
+Reddit is polled through the subscription nodes (one worker + one long-lived session per good node), home IP optionally
+as one more worker (`NODE_INCLUDE_DIRECT`). Needs `VPN_SUB_URL`; `direct` stays the default.
+```
+# .env: SOURCE_MODE=nodes, VPN_SUB_URL=...
+docker compose up -d --build
+docker compose logs -f --tail=50 | grep -E "nodepool|new/s"
+docker compose run --rm parser python scripts/scan_nodes.py     # per-node table (safari/chrome/codes/region)
+```
+- Start: all nodes are scanned (`NODE_SCAN_CONCURRENCY`), good = 200 with >=20 comments; log `nodepool: scan good=N/M`.
+- A 403 never recreates the session (retry in the same one); 4 in a row -> quarantine `NODE_QUARANTINE`s, then session reset.
+- Rescan every `NODE_RESCAN`s, on subscription change, or when good < `NODE_MIN_GOOD` (only nodes without a worker).
+- `NODE_AUTOTUNE`: every `NODE_TUNE_WINDOW`s interval x0.9 (429<3%, empty<25%) / x1.25 (429>8% or empty>40%), rollback + 10 min
+  freeze if new/s does not grow >3% in 2 windows; popular share auto 0.2-0.7. State: `data/nodepool.json`.
+- Limiters (0 = off): `MAX_ITEMS_PER_SEC`, `MAX_PAGES_PER_SEC`, `MAX_GB_PER_DAY` (rolling 24h, `data/traffic.json`; 90% -> interval x2, 100% -> pause).
+- `URLCHECK_CONCURRENCY` = parallel url-check batches (watch `uc_lat` and `queue`).
+- Log fields: `nodes=good/total mb/s gb_day iv pop rep sat cold403 uc_lat queue rate_cap(in filtered)`.

@@ -13,7 +13,7 @@ class Metrics:
     def __init__(self) -> None:
         self.c: Counter[str] = Counter()
         self.filtered: Counter[str] = Counter()
-        self.gauges: dict[str, Callable[[], int]] = {}
+        self.gauges: dict[str, Callable[[], object]] = {}
         self._last = time.monotonic()
         self._snap: Counter[str] = Counter()
         self._snap_f: Counter[str] = Counter()
@@ -41,9 +41,13 @@ class Metrics:
         uc_in = g("uc_in")
         known_pct = 100.0 * g("uc_known") / uc_in if uc_in else 0.0
         fl = {k: self.filtered[k] - self._snap_f[k] for k in self.filtered if self.filtered[k] - self._snap_f[k]}
+        mb_s = g("bytes") / 1e6 / dt
+        dup, uniq = g("dup"), g("unique")
+        rep = 100.0 * dup / (dup + uniq) if dup + uniq else 0.0
+        extra = f"mb/s={mb_s:.2f} cold403={g('pages_cold403')} rep={rep:.0f}% sat={g('pages_sat')}/{g('pages_cmt')} "
         gauges = " ".join(f"{k}={fn()}" for k, fn in self.gauges.items())
         out = (
-            f"pages/s={pages/dt:.2f} comments/s={g('comments')/dt:.1f} new/s={g('unique')/dt:.1f} "
+            f"pages/s={pages/dt:.2f} {extra}comments/s={g('comments')/dt:.1f} new/s={g('unique')/dt:.1f} "
             f"empty={empty_pct:.0f}% 403={g('http_403')} 429={g('http_429')} err={g('fetch_err')} "
             f"filtered={fl or 0} uc_known={known_pct:.0f}% uc_err={g('uc_err')} "
             f"sent/s={g('sent')/dt:.1f} store_err={g('store_err')} spooled={g('spooled')} {gauges}"

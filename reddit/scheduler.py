@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 import logging
 import random
 import time
@@ -14,26 +13,61 @@ from .metrics import Metrics
 log = logging.getLogger("scheduler")
 
 
-def build_targets(subs: list[str], popular_weight: int) -> list[str]:
-    pop = "https://www.reddit.com/r/popular/comments/?limit=100"
-    seq: list[str] = []
-    if not subs:
-        return [pop]
-    for sub in subs:
-        seq += [pop] * max(1, popular_weight)
-        seq.append(f"https://www.reddit.com/r/{sub}/comments/?limit=100")
-    return seq
+POPULAR_URL = "https://www.reddit.com/r/popular/comments/?limit=100"
+
+
+def sub_url(sub: str) -> str:
+    return f"https://www.reddit.com/r/{sub}/comments/?limit=100"
+
+
+class TargetPicker:
+    """Hands out request targets: popular + SUBS. Sub choice = least recently polled (round-robin by age)."""
+
+    def __init__(self, subs: list[str], popular_weight: int = 3) -> None:
+        self.subs = list(subs)
+        self.weight = max(1, popular_weight)
+        self._last: dict[str, float] = {s: 0.0 for s in self.subs}
+        self._n = 0
+        self._acc = 0.0
+
+    def _sub(self) -> str:
+        s = min(self.subs, key=lambda x: self._last[x])
+        self._last[s] = time.monotonic()
+        self._n += 1  # tie-break for equal timestamps on coarse clocks
+        self._last[s] += self._n * 1e-9
+        return sub_url(s)
+
+    def pick(self) -> str:
+        """Direct mode: `popular_weight` popular requests per one sub request."""
+        if not self.subs:
+            return POPULAR_URL
+        self._n += 1
+        return self._sub() if self._n % (self.weight + 1) == 0 else POPULAR_URL
+
+    def pick_share(self, share: float) -> str:
+        """Nodes mode: fraction `share` of requests goes to popular (deterministic accumulator)."""
+        if not self.subs:
+            return POPULAR_URL
+        self._acc += max(0.0, min(1.0, share))
+        if self._acc >= 1.0:
+            self._acc -= 1.0
+            return POPULAR_URL
+        return self._sub()
+
+    @staticmethod
+    def is_popular(url: str) -> bool:
+        return url == POPULAR_URL
 
 
 class Scheduler:
     def __init__(self, s, http: HttpClient, metrics: Metrics,
-                 on_page: Callable[[str], Awaitable[int]]) -> None:
+                 on_page: Callable[..., Awaitable[int]], picker: TargetPicker | None = None) -> None:
         self.s = s
         self.http = http
         self.m = metrics
         self.on_page = on_page  # returns number of comments parsed from the page
         self.interval = s.req_interval
-        self._targets = itertools.cycle(build_targets(s.subs, s.popular_weight))
+        self.picker = picker or TargetPicker(s.subs, s.popular_weight)
         self._ban = 60.0
         self._empty_streak = 0
         self._win = [0, 0]  # [pages, bad] for the adaptive mode
@@ -61,7 +95,7 @@ class Scheduler:
     async def run(self) -> None:
         while not self.stop.is_set():
             t0 = time.monotonic()
-            url = next(self._targets)
+            url = self.picker.pick()
             n = await self._one(url)
             self._adapt()
             if n == -1:  # 403/429 or network error: backoff already slept
@@ -100,7 +134,7 @@ class Scheduler:
             await self._sleep(5)
             return -1
         self._ban = 60.0
-        n = await self.on_page(text)
+        n = await self.on_page(text, url)
         if n == 0:
             self.m.inc("pages_empty")
             self._win[1] += 1

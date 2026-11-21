@@ -15,6 +15,11 @@ class SeenCache:
     def __len__(self) -> int:
         return len(self._d)
 
+    def has(self, key: str) -> bool:
+        """True if key is seen/claimed (does not modify the cache)."""
+        cur = self._d.get(key)
+        return cur is not None and cur[0] > time.monotonic()
+
     def claim(self, key: str) -> bool:
         """True if key was not seen (and is now claimed); False if already seen/claimed."""
         now = time.monotonic()

@@ -15,6 +15,7 @@ import os
 import statistics
 import time
 from dataclasses import dataclass
+from typing import Callable
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -130,8 +131,17 @@ class VpnManager:
         self._wake = asyncio.Event()
         self._last_test = 0.0
         self._stop = False
+        self.on_nodes_changed: Callable[[], None] | None = None
 
     # ---- public API ----
+    @property
+    def ready(self) -> bool:
+        return bool(self._nodes) and self._proc is not None and self._proc.returncode is None
+
+    def node_ports(self) -> list[tuple[str, str, int]]:
+        """(key, name, socks port) for every node; ports are base+index of the current node set."""
+        return [(n.key, n.name, self._base + i) for i, n in enumerate(self._nodes)]
+
     def proxy(self) -> str | None:
         for i, n in enumerate(self._nodes):
             if n.key == self._cur:
@@ -209,6 +219,11 @@ class VpnManager:
             self._lat = {k: v for k, v in self._lat.items() if k in {n.key for n in nodes}}
             log.info("subscription: %d nodes, restarting xray", len(nodes))
             await self._restart_xray()
+            if self.on_nodes_changed:
+                try:
+                    self.on_nodes_changed()
+                except Exception:  # noqa: BLE001
+                    log.warning("on_nodes_changed callback failed")
         else:
             log.info("subscription refreshed: %d nodes, unchanged", len(nodes))
 

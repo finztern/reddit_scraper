@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import logging
+import statistics
+import time
+from collections import deque
 from typing import Callable
 
 import httpx
@@ -36,6 +39,10 @@ class UrlChecker:
         self._direct = direct
         self._client: httpx.AsyncClient | None = None
         self._client_proxy: str | None = None
+        self._lat: deque[float] = deque(maxlen=50)
+
+    def median_latency(self) -> float:
+        return statistics.median(self._lat) if self._lat else 0.0
 
     async def _get_client(self) -> httpx.AsyncClient | None:
         proxy = self._proxy()
@@ -54,8 +61,10 @@ class UrlChecker:
             c = await self._get_client()
             if c is None:
                 raise RuntimeError("no proxy available")
+            t0 = time.monotonic()
             r = await c.post(self._url, json={"urls": [i["url"] for i in items]})
             r.raise_for_status()
+            self._lat.append(time.monotonic() - t0)
             known = extract_known(r.json())
         except Exception as e:  # noqa: BLE001
             log.warning("url-check failed: %s", type(e).__name__)

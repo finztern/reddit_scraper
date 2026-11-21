@@ -25,6 +25,7 @@ class Sender:
         self.checker = checker
         self._in: asyncio.Queue[dict] = asyncio.Queue(maxsize=s.queue_max)
         self._ready: asyncio.Queue[dict] = asyncio.Queue(maxsize=s.queue_max)
+        self._cbatches: asyncio.Queue[list[dict]] = asyncio.Queue(maxsize=max(1, s.urlcheck_concurrency))
         self._batches: asyncio.Queue[list[dict]] = asyncio.Queue(maxsize=max(2, s.store_concurrency * 2))
         self._rr = itertools.cycle(range(len(s.store_endpoints)))
         self._client = httpx.AsyncClient(timeout=20, trust_env=False)
@@ -35,14 +36,15 @@ class Sender:
         self._open_until = 0.0
         self._tasks: list[asyncio.Task] = []
         self._stopping = False
-        metrics.gauges["queue"] = lambda: self._in.qsize() + self._ready.qsize() + self._batches.qsize() * s.batch_max
+        metrics.gauges["queue"] = lambda: self._in.qsize() + self._ready.qsize() + (self._batches.qsize() + self._cbatches.qsize()) * s.batch_max
 
     async def submit(self, item: dict) -> None:
         await self._in.put(item)  # blocks when full -> natural backpressure on the scheduler
 
     def start(self) -> None:
-        self._tasks = [asyncio.create_task(self._check_loop()), asyncio.create_task(self._batch_loop()),
+        self._tasks = [asyncio.create_task(self._check_batcher()), asyncio.create_task(self._batch_loop()),
                        asyncio.create_task(self._replay_loop())]
+        self._tasks += [asyncio.create_task(self._check_worker()) for _ in range(max(1, self.s.urlcheck_concurrency))]
         self._tasks += [asyncio.create_task(self._send_worker()) for _ in range(self.s.store_concurrency)]
 
     # ---- helpers ----
@@ -64,33 +66,44 @@ class Sender:
             self.seen.release(i["external_id"])
 
     # ---- stages ----
-    async def _check_loop(self) -> None:
+    async def _check_batcher(self) -> None:
         while True:
             items = await self._take(self._in, self.s.urlcheck_batch, self.s.urlcheck_flush)
-            if not items:
-                continue
-            if self.checker is None:
-                fresh = items
-            else:
-                self.m.inc("uc_in", len(items))
-                delay = 2.0
-                while True:
-                    fresh = await self.checker.unknown(items)
-                    if fresh is not None:
-                        break
-                    self.m.inc("uc_err")
-                    if self._stopping:
-                        self._to_spool(items)
-                        return
-                    await asyncio.sleep(delay)  # policy=closed: never send unchecked, retry
-                    delay = min(delay * 2, 30.0)
-                fresh_ids = {i["external_id"] for i in fresh}
-                known = [i for i in items if i["external_id"] not in fresh_ids]
-                self.m.inc("uc_known", len(known))
-                for i in known:
-                    self.seen.confirm(i["external_id"])
-            for i in fresh:
-                await self._ready.put(i)
+            if items:
+                await self._cbatches.put(items)
+
+    async def _check_worker(self) -> None:
+        while True:
+            items = await self._cbatches.get()
+            try:
+                await self._check(items)
+            except asyncio.CancelledError:
+                self._release(items)  # unchecked: forget claims, items can be re-collected later
+                raise
+
+    async def _check(self, items: list[dict]) -> None:
+        if self.checker is None:
+            fresh = items
+        else:
+            self.m.inc("uc_in", len(items))
+            delay = 2.0
+            while True:
+                fresh = await self.checker.unknown(items)
+                if fresh is not None:
+                    break
+                self.m.inc("uc_err")
+                if self._stopping:
+                    self._release(items)
+                    return
+                await asyncio.sleep(delay)  # policy=closed: never send unchecked, retry
+                delay = min(delay * 2, 30.0)
+            fresh_ids = {i["external_id"] for i in fresh}
+            known = [i for i in items if i["external_id"] not in fresh_ids]
+            self.m.inc("uc_known", len(known))
+            for i in known:
+                self.seen.confirm(i["external_id"])
+        for i in fresh:
+            await self._ready.put(i)
 
     async def _batch_loop(self) -> None:
         while True:
@@ -186,9 +199,13 @@ class Sender:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
         left: list[dict] = []
-        for q in (self._in, self._ready):
+        while not self._cbatches.empty():
+            self._release(self._cbatches.get_nowait())  # not url-checked yet: drop claims, never spool unchecked
+        for q in (self._in,):
             while not q.empty():
-                left.append(q.get_nowait())
+                self._release([q.get_nowait()])
+        while not self._ready.empty():
+            left.append(self._ready.get_nowait())
         while not self._batches.empty():
             left += self._batches.get_nowait()
         for k in range(0, len(left), self.s.batch_max):

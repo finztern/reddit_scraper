@@ -1,7 +1,10 @@
 # Defaults; env vars override these. No secrets here.
 store_endpoint: "http://127.0.0.1:9000/store_items"
 urlcheck_policy: closed
-subs: [AskReddit, politics, worldnews]
+subs: [AskReddit, politics, worldnews, news, funny, pics, gaming, memes, mildlyinfuriating, movies,
+       Showerthoughts, interestingasfuck, todayilearned, science, technology, sports, nba, soccer, nfl,
+       AmItheAsshole, teenagers, relationship_advice, unpopularopinion, Damnthatsinteresting, PublicFreakout,
+       Music, television, wallstreetbets, CasualConversation, MadeMeSmile]
 req_interval: 1.0
 jitter: 0.2
 batch_min: 30
@@ -28,3 +31,22 @@ vpn_port_base: 21000
 vpn_test_interval: 600   # re-test all nodes, sec
 vpn_sub_refresh: 3600    # re-download subscription, sec
 vpn_switch_gain: 0.8     # switch only if new best latency < current * this
+urlcheck_concurrency: 4   # parallel url-check batches
+# ---- nodes mode (SOURCE_MODE=nodes needs VPN_SUB_URL in .env) ----
+source_mode: direct       # direct | nodes
+node_interval: 5.0
+node_autotune: true
+node_interval_min: 1.5
+node_interval_max: 15
+node_tune_window: 60
+node_include_direct: true # home IP works as one more worker
+node_scan_concurrency: 100
+node_quarantine: 600
+node_rescan: 1800
+node_min_good: 10
+node_popular_share: 0.5
+node_fallback_direct: false
+node_profiles: [safari, chrome]
+max_items_per_sec: 0      # 0 = no limit
+max_pages_per_sec: 0
+max_gb_per_day: 0

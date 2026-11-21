@@ -49,6 +49,55 @@ class Settings:
     vpn_test_interval: float = 600.0
     vpn_sub_refresh: float = 3600.0
     vpn_switch_gain: float = 0.8
+    urlcheck_concurrency: int = 4
+    # nodes mode
+    source_mode: str = "direct"          # direct | nodes
+    node_interval: float = 5.0
+    node_autotune: bool = True
+    node_interval_min: float = 1.5
+    node_interval_max: float = 15.0
+    node_tune_window: float = 60.0
+    node_include_direct: bool = True
+    node_scan_concurrency: int = 100
+    node_quarantine: float = 600.0
+    node_rescan: float = 1800.0
+    node_min_good: int = 10
+    node_popular_share: float = 0.5
+    node_fallback_direct: bool = False
+    node_profiles: list[str] = field(default_factory=lambda: ["safari", "chrome"])
+    max_items_per_sec: float = 0.0       # 0 = unlimited
+    max_pages_per_sec: float = 0.0
+    max_gb_per_day: float = 0.0
+
+
+class ConfigError(Exception):
+    pass
+
+
+_NODE_KEYS = {  # attr -> type
+    "source_mode": str, "node_interval": float, "node_autotune": bool, "node_interval_min": float,
+    "node_interval_max": float, "node_tune_window": float, "node_include_direct": bool,
+    "node_scan_concurrency": int, "node_quarantine": float, "node_rescan": float, "node_min_good": int,
+    "node_popular_share": float, "node_fallback_direct": bool, "node_profiles": list,
+    "max_items_per_sec": float, "max_pages_per_sec": float, "max_gb_per_day": float,
+    "urlcheck_concurrency": int,
+}
+
+
+def _conv(typ, v):
+    if typ is bool:
+        return v if isinstance(v, bool) else str(v).lower() in ("1", "true", "yes")
+    if typ is list:
+        return _split(v) if isinstance(v, str) else [str(x) for x in v]
+    return typ(v)
+
+
+def check(s: "Settings") -> None:
+    """Startup validation; raises ConfigError with a readable message."""
+    if s.source_mode not in ("direct", "nodes"):
+        raise ConfigError(f"SOURCE_MODE must be direct|nodes, got {s.source_mode!r}")
+    if s.source_mode == "nodes" and not s.vpn_sub_url:
+        raise ConfigError("SOURCE_MODE=nodes requires VPN_SUB_URL (subscription link, set it in .env)")
 
 
 def load() -> Settings:
@@ -94,4 +143,9 @@ def load() -> Settings:
     s.vpn_test_interval = float(e("VPN_TEST_INTERVAL", s.vpn_test_interval))
     s.vpn_sub_refresh = float(e("VPN_SUB_REFRESH", s.vpn_sub_refresh))
     s.data_dir = e("DATA_DIR", s.data_dir)
+    for attr, typ in _NODE_KEYS.items():
+        if attr in y:
+            setattr(s, attr, _conv(typ, y[attr]))
+        if e(attr.upper()) not in (None, ""):
+            setattr(s, attr, _conv(typ, e(attr.upper())))
     return s
