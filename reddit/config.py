@@ -71,7 +71,7 @@ class Settings:
     max_items_per_sec: float = 0.0       # 0 = unlimited
     max_pages_per_sec: float = 0.0
     max_gb_per_day: float = 0.0
-    dash_host: str = "127.0.0.1"        # DASH_HOST=0.0.0.0 to open from other machines
+    dash_host: str = "0.0.0.0"          # LAN-visible; DASH_HOST=127.0.0.1 to keep it local only
     dash_port: int = 8080                # 0 = dashboard off
     target_rate: float = 0.0             # initial value; config/runtime.yaml overrides and hot-reloads
     buffer_seconds: float = 5.0
