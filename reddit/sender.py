@@ -64,6 +64,11 @@ class Sender:
         except asyncio.TimeoutError:
             return out
         while len(out) < maxn:
+            try:  # drain what is already queued without creating a timeout task per item
+                out.append(q.get_nowait())
+                continue
+            except asyncio.QueueEmpty:
+                pass
             try:
                 out.append(await asyncio.wait_for(q.get(), timeout=idle))
             except asyncio.TimeoutError:

@@ -21,6 +21,9 @@ def make_on_page(s, m, seen, sender, parent_mode: str, bucket=None, demand=None)
                 m.inc("dup")
                 m.drop("dup")
                 continue
+            if not raw.body_html.strip():  # skip HTML->text for empty bodies
+                m.drop("empty")
+                continue
             content = mapper.build_content(raw.body_html)
             reason = filters.reject_reason(raw.author, content, s.min_text_len)
             if reason:
