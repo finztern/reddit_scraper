@@ -12,6 +12,7 @@ services:
     volumes:
       - ./data:/app/data
       - ./config:/app/config
+      - ./hub/data:/hub:ro   # nodes.json from xray-hub (VPN_MODE=external)
     healthcheck:
       test: ["CMD-SHELL", "test -n \"$(find /app/data/heartbeat -mmin -2 2>/dev/null)\""]
       interval: 60s

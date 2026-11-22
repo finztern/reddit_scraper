@@ -10,3 +10,5 @@ config/nodes.txt
 config/*.nodes
 config/proxys.txt
 proxys.txt
+hub/data/*
+!hub/data/.gitkeep

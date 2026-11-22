@@ -46,6 +46,8 @@ class Settings:
     data_dir: str = "data"
     # VPN manager (active when vpn_sub_url is set and urlcheck_proxy is empty)
     vpn_sub_url: str = ""
+    vpn_mode: str = "managed"            # managed (own xray) | external (nodes from xray-hub)
+    hub_nodes_file: str = "/hub/nodes.json"
     vpn_nodes_file: str = ""             # file with vless:// lines (alternative to the subscription link)
     vpn_port_base: int = 21000
     vpn_test_interval: float = 600.0
@@ -86,6 +88,7 @@ class ConfigError(Exception):
 
 
 _NODE_KEYS = {  # attr -> type
+    "vpn_mode": str, "hub_nodes_file": str,
     "source_mode": str, "proxy_file": str, "node_interval": float, "node_autotune": bool, "node_interval_min": float,
     "node_interval_max": float, "node_tune_window": float, "node_include_direct": bool,
     "node_scan_concurrency": int, "node_quarantine": float, "node_rescan": float, "node_min_good": int,
@@ -106,12 +109,17 @@ def _conv(typ, v):
 
 def check(s: "Settings") -> None:
     """Startup validation; raises ConfigError with a readable message."""
+    if s.vpn_mode not in ("managed", "external"):
+        raise ConfigError(f"VPN_MODE must be managed|external, got {s.vpn_mode!r}")
     if s.source_mode not in ("direct", "nodes", "proxy"):
         raise ConfigError(f"SOURCE_MODE must be direct|nodes|proxy, got {s.source_mode!r}")
     if s.source_mode == "proxy" and not Path(s.proxy_file).is_file():
         raise ConfigError(f"SOURCE_MODE=proxy: PROXY_FILE not found: {s.proxy_file}")
     if s.source_mode == "nodes":
-        if not (s.vpn_sub_url or s.vpn_nodes_file):
+        if s.vpn_mode == "external":
+            if not Path(s.hub_nodes_file).is_file():
+                raise ConfigError(f"VPN_MODE=external: HUB_NODES_FILE not found: {s.hub_nodes_file} (start xray-hub first)")
+        elif not (s.vpn_sub_url or s.vpn_nodes_file):
             raise ConfigError("SOURCE_MODE=nodes requires VPN_SUB_URL or VPN_NODES_FILE (set it in .env)")
         if s.vpn_nodes_file and not Path(s.vpn_nodes_file).is_file():
             raise ConfigError(f"VPN_NODES_FILE not found: {s.vpn_nodes_file}")

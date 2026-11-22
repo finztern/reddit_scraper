@@ -22,6 +22,7 @@ from .seen_cache import SeenCache
 from .sender import Sender
 from .url_check import UrlChecker
 from .vpn import VpnManager
+from .vpn_external import ExternalVpn
 
 log = logging.getLogger("app")
 
@@ -46,9 +47,13 @@ async def amain() -> None:
 
     m = Metrics()
     seen = SeenCache(s.seen_max)
-    vpn: VpnManager | None = None
+    vpn: VpnManager | ExternalVpn | None = None
     vpn_src = s.vpn_sub_url or s.vpn_nodes_file
-    if vpn_src and (nodes_mode or not s.urlcheck_proxy):
+    if s.vpn_mode == "external":
+        vpn = ExternalVpn(s.hub_nodes_file)
+        vpn_src = s.hub_nodes_file
+        log.info("vpn: external (xray-hub), nodes from %s", s.hub_nodes_file)
+    elif vpn_src and (nodes_mode or not s.urlcheck_proxy):
         vpn = VpnManager(s.vpn_sub_url, s.data_dir, s.urlcheck_url, s.vpn_port_base,
                          s.vpn_test_interval, s.vpn_sub_refresh, s.vpn_switch_gain, nodes_file=s.vpn_nodes_file)
     if s.urlcheck_proxy:
