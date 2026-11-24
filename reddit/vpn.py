@@ -178,7 +178,7 @@ class VpnManager:
     async def start(self) -> None:
         self._dir.mkdir(parents=True, exist_ok=True)
         await self._refresh_subscription()
-        await self._test_all()
+        self._wake.set()  # first _test_all runs in the background loop, startup is not blocked
 
     async def run(self) -> None:
         last_refresh = time.monotonic()
@@ -279,7 +279,8 @@ class VpnManager:
                             if r.status_code < 500:
                                 times.append(time.monotonic() - t)
                         except Exception:  # noqa: BLE001
-                            pass
+                            if not times:
+                                break  # dead node: fail fast
             except Exception:  # noqa: BLE001
                 pass
             return statistics.median(times) if len(times) >= 2 else None
