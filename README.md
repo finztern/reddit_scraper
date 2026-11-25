@@ -103,3 +103,8 @@ cat data/nodes.json                # key, name, port, alive, latency_ms
 - Every `HUB_TEST_MINUTES` (N, 10) each node is probed through its own port (`HUB_PROBE_URL`); `HUB_SUB_HOURS` (M, 6) re-downloads the subscription; xray restarts only if the node set changed.
 - Reddit uses only alive nodes: in the parser `.env` set `VPN_MODE=external` (no `VPN_SUB_URL`, no own xray), `SOURCE_MODE=nodes` as before. Parser mounts `./hub/data` read-only as `/hub`.
 - Start the hub before the parser. Other parsers: mount `hub/data` and read `nodes.json` (alive=true), or just use port 10809.
+
+## Pipeline nodes (`VPN_MODE=pipeline`)
+All alive SOCKS5 nodes come from the local pipeline API (`NODES_URL`, default `http://127.0.0.1:8099/nodes`, same host, `network_mode: host`).
+List is re-polled every `NODES_POLL`=30 s; a changed alive set triggers a rescan (new nodes start, dead ones are dropped). API down -> last list is kept.
+url-check goes through the 2 fastest nodes. `.env`: `VPN_MODE=pipeline`, `SOURCE_MODE=nodes`; no `VPN_SUB_URL`/`URLCHECK_PROXY`.

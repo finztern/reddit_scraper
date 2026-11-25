@@ -23,6 +23,7 @@ from .sender import Sender
 from .url_check import UrlChecker
 from .vpn import VpnManager
 from .vpn_external import ExternalVpn
+from .vpn_pipeline import PipelineVpn
 
 log = logging.getLogger("app")
 
@@ -47,9 +48,13 @@ async def amain() -> None:
 
     m = Metrics()
     seen = SeenCache(s.seen_max)
-    vpn: VpnManager | ExternalVpn | None = None
+    vpn: VpnManager | ExternalVpn | PipelineVpn | None = None
     vpn_src = s.vpn_sub_url or s.vpn_nodes_file
-    if s.vpn_mode == "external":
+    if s.vpn_mode == "pipeline":
+        vpn = PipelineVpn(s.nodes_url, s.nodes_poll)
+        vpn_src = s.nodes_url
+        log.info("vpn: pipeline, nodes from %s every %.0fs", s.nodes_url, s.nodes_poll)
+    elif s.vpn_mode == "external":
         vpn = ExternalVpn(s.hub_nodes_file)
         vpn_src = s.hub_nodes_file
         log.info("vpn: external (xray-hub), nodes from %s", s.hub_nodes_file)
