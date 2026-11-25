@@ -4,7 +4,7 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hub"))
-from hub import assign_ports, build_config  # noqa: E402
+from hub import assign_ports, build_config, supported  # noqa: E402
 
 from reddit.vpn import parse_subscription
 from reddit.vpn_external import ExternalVpn
@@ -20,13 +20,26 @@ def test_ports_are_stable():
     assert p2["a"] == 21000 and p2["c"] == 21003 and p2["d"] == 21002
 
 
-def test_config_has_best_balancer():
-    nodes = parse_subscription("\n".join(U.format(n=f"n{i}").replace("11111111", f"{i}" * 8) for i in range(2)))
+HY = "hysteria2://pass%40word@hy.example.org:8443?sni=hy.example.org&insecure=1&obfs=salamander&obfs-password=ob#hy-1"
+
+
+def test_config_singbox_best_urltest_and_hy2():
+    nodes = parse_subscription("\n".join([U.format(n="n0"), HY]))
+    assert {n.scheme for n in nodes} == {"vless", "hysteria2"}
     cfg = build_config(nodes, {n.key: 21000 + i for i, n in enumerate(nodes)}, 10809, "https://x/204")
-    assert {i["port"] for i in cfg["inbounds"]} == {21000, 21001, 10809}
-    assert cfg["routing"]["balancers"][0]["strategy"]["type"] == "leastPing"
-    assert any(r.get("balancerTag") == "best" for r in cfg["routing"]["rules"])
+    assert {i["listen_port"] for i in cfg["inbounds"]} == {21000, 21001, 10809}
+    by = {o["type"]: o for o in cfg["outbounds"]}
+    assert by["urltest"]["tag"] == "best" and len(by["urltest"]["outbounds"]) == 2
+    hy = by["hysteria2"]
+    assert hy["password"] == "pass@word" and hy["tls"]["insecure"] is True and hy["obfs"]["password"] == "ob"
+    assert by["vless"]["transport"]["type"] == "ws" and by["vless"]["tls"]["server_name"] == "h.example.org"
+    assert any(r.get("outbound") == "best" for r in cfg["route"]["rules"])
     json.dumps(cfg)
+
+
+def test_xhttp_is_skipped():
+    n = parse_subscription(U.format(n="x").replace("type=ws", "type=xhttp"))[0]
+    assert not supported(n)
 
 
 def test_external_only_alive_and_fastest(tmp_path):

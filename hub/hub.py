@@ -1,9 +1,9 @@
-"""xray-hub: one xray for the whole host, shared by all parsers.
+"""hub: one sing-box (vless + hysteria2) for the whole host, shared by all parsers.
 
 - every node of the subscription gets a SOCKS inbound on a STABLE port (key -> port, persisted in ports.json)
-- 127.0.0.1:HUB_BEST_PORT (10809) always goes through the fastest alive node (xray leastPing balancer)
+- 127.0.0.1:HUB_BEST_PORT (10809) always goes through the fastest alive node (sing-box urltest)
 - every HUB_TEST_MINUTES each node is probed through its own port; result -> data/nodes.json
-- subscription is re-downloaded every HUB_SUB_HOURS; xray restarts only when the node set changes
+- subscription is re-downloaded every HUB_SUB_HOURS; sing-box restarts only when the node set changes
 """
 from __future__ import annotations
 
@@ -18,7 +18,9 @@ from pathlib import Path
 
 import httpx
 
-from reddit.vpn import Node, _stream, parse_subscription
+from urllib.parse import unquote
+
+from reddit.vpn import Node, parse_subscription
 
 log = logging.getLogger("hub")
 
@@ -38,26 +40,65 @@ def assign_ports(keys: list[str], old: dict[str, int], base: int, skip: set[int]
     return ports
 
 
-def build_config(nodes: list[Node], ports: dict[str, int], best_port: int, probe_url: str, bind: str = "127.0.0.1") -> dict:
+def _tls(n: Node) -> dict:
+    p = n.params
+    tls: dict = {"enabled": True, "server_name": p.get("sni") or p.get("host") or n.host}
+    if p.get("alpn"):
+        tls["alpn"] = p["alpn"].split(",")
+    if p.get("insecure") in ("1", "true") or p.get("allowInsecure") in ("1", "true"):
+        tls["insecure"] = True
+    if n.scheme == "vless":
+        fp = p.get("fp") or "chrome"
+        tls["utls"] = {"enabled": True, "fingerprint": fp}
+        if p.get("security") == "reality":
+            tls["reality"] = {"enabled": True, "public_key": p.get("pbk", ""), "short_id": p.get("sid", "")}
+    return tls
+
+
+def supported(n: Node) -> bool:
+    """sing-box has no xhttp/splithttp transport; everything else from the subscription is usable."""
+    if n.scheme == "hysteria2":
+        return True
+    return n.params.get("type", "tcp") not in ("xhttp", "splithttp") and n.params.get("security", "none") in ("tls", "reality", "none")
+
+
+def build_outbound(n: Node, tag: str) -> dict:
+    o: dict = {"tag": tag, "server": n.host, "server_port": n.port, "domain_strategy": "ipv4_only"}
+    p = n.params
+    if n.scheme == "hysteria2":
+        o.update(type="hysteria2", password=n.uuid, tls=_tls(n))
+        if p.get("obfs"):
+            o["obfs"] = {"type": p["obfs"], "password": p.get("obfs-password", "")}
+        return o
+    o.update(type="vless", uuid=n.uuid)
+    if p.get("flow"):
+        o["flow"] = p["flow"]
+    if p.get("security") in ("tls", "reality"):
+        o["tls"] = _tls(n)
+    net, path, host = p.get("type", "tcp"), unquote(p.get("path", "/")), p.get("host", "")
+    if net == "ws":
+        o["transport"] = {"type": "ws", "path": path, "headers": {"Host": host} if host else {}}
+    elif net == "httpupgrade":
+        o["transport"] = {"type": "httpupgrade", "path": path, "host": host}
+    elif net == "grpc":
+        o["transport"] = {"type": "grpc", "service_name": unquote(p.get("serviceName", ""))}
+    return o
+
+
+def build_config(nodes: list[Node], ports: dict[str, int], best_port: int, probe_url: str, bind: str = "127.0.0.1",
+                 best_interval: str = "10m") -> dict:
     inbounds, outbounds, rules = [], [], []
     for n in nodes:
-        inbounds.append({"tag": f"in-{n.key}", "listen": bind, "port": ports[n.key], "protocol": "socks",
-                         "settings": {"auth": "noauth", "udp": False}})
-        user = {"id": n.uuid, "encryption": n.params.get("encryption", "none") or "none"}
-        if n.params.get("flow"):
-            user["flow"] = n.params["flow"]
-        outbounds.append({"tag": f"out-{n.key}", "protocol": "vless",
-                          "settings": {"vnext": [{"address": n.host, "port": n.port, "users": [user]}]},
-                          "streamSettings": _stream(n)})
-        rules.append({"type": "field", "inboundTag": [f"in-{n.key}"], "outboundTag": f"out-{n.key}"})
-    inbounds.append({"tag": "in-best", "listen": bind, "port": best_port, "protocol": "socks",
-                     "settings": {"auth": "noauth", "udp": False}})
-    rules.append({"type": "field", "inboundTag": ["in-best"], "balancerTag": "best"})
-    return {"log": {"loglevel": "warning"}, "inbounds": inbounds, "outbounds": outbounds,
-            "observatory": {"subjectSelector": ["out-"], "probeUrl": probe_url, "probeInterval": "60s",
-                            "enableConcurrency": True},
-            "routing": {"domainStrategy": "AsIs", "rules": rules,
-                        "balancers": [{"tag": "best", "selector": ["out-"], "strategy": {"type": "leastPing"}}]}}
+        inbounds.append({"type": "socks", "tag": f"in-{n.key}", "listen": bind, "listen_port": ports[n.key]})
+        outbounds.append(build_outbound(n, f"out-{n.key}"))
+        rules.append({"inbound": [f"in-{n.key}"], "outbound": f"out-{n.key}"})
+    inbounds.append({"type": "socks", "tag": "in-best", "listen": bind, "listen_port": best_port})
+    outbounds.append({"type": "urltest", "tag": "best", "outbounds": [f"out-{n.key}" for n in nodes],
+                      "url": probe_url, "interval": best_interval, "tolerance": 100, "idle_timeout": "30m"})
+    outbounds.append({"type": "direct", "tag": "direct"})
+    rules.append({"inbound": ["in-best"], "outbound": "best"})
+    return {"log": {"level": "warn"}, "inbounds": inbounds, "outbounds": outbounds,
+            "route": {"rules": rules, "final": "direct"}}
 
 
 class Hub:
@@ -88,19 +129,19 @@ class Hub:
             return r.text
 
     async def refresh(self) -> bool:
-        """Re-read the subscription. True when the node set changed (xray was restarted)."""
+        """Re-read the subscription. True when the node set changed (sing-box was restarted)."""
         cache = self.dir / "nodes.cache"
         text = ""
         try:
             text = await self._download()
         except Exception as e:  # noqa: BLE001
             log.warning("subscription failed: %s", type(e).__name__)
-        nodes = parse_subscription(text) if text else []
+        nodes = [n for n in parse_subscription(text) if supported(n)] if text else []
         if nodes:
             cache.write_text(text)
             os.chmod(cache, 0o600)
         elif not self.nodes and cache.exists():
-            nodes = parse_subscription(cache.read_text())
+            nodes = [n for n in parse_subscription(cache.read_text()) if supported(n)]
             log.warning("using cached subscription (%d nodes)", len(nodes))
         if not nodes:
             log.warning("no nodes; keeping previous set (%d)", len(self.nodes))
@@ -112,8 +153,8 @@ class Hub:
         self.ports = assign_ports([n.key for n in nodes], old, self.base, {self.best})
         self._save_ports()
         self.nodes = nodes
-        log.info("subscription: %d nodes, restarting xray", len(nodes))
-        await self._restart_xray()
+        log.info("subscription: %d nodes, restarting sing-box", len(nodes))
+        await self._restart_singbox()
         return True
 
     def _load_ports(self) -> dict[str, int]:
@@ -125,7 +166,7 @@ class Hub:
     def _save_ports(self) -> None:
         (self.dir / "ports.json").write_text(json.dumps(self.ports))
 
-    # ---- xray ----
+    # ---- sing-box ----
     async def _kill(self) -> None:
         if self.proc and self.proc.returncode is None:
             self.proc.terminate()
@@ -134,16 +175,16 @@ class Hub:
             except asyncio.TimeoutError:
                 self.proc.kill()
 
-    async def _restart_xray(self) -> None:
+    async def _restart_singbox(self) -> None:
         await self._kill()
-        cfg = self.dir / "xray.json"
+        cfg = self.dir / "singbox.json"
         cfg.write_text(json.dumps(build_config(self.nodes, self.ports, self.best, self.probe_url, self.bind)))
         os.chmod(cfg, 0o600)
-        logf = open(self.dir / "xray.log", "w")  # noqa: SIM115
-        self.proc = await asyncio.create_subprocess_exec("xray", "run", "-c", str(cfg), stdout=logf, stderr=logf)
+        logf = open(self.dir / "singbox.log", "w")  # noqa: SIM115
+        self.proc = await asyncio.create_subprocess_exec("sing-box", "run", "-c", str(cfg), stdout=logf, stderr=logf)
         await asyncio.sleep(1.5)
         if self.proc.returncode is not None:
-            log.error("xray failed to start, see data/xray.log")
+            log.error("sing-box failed to start, see data/singbox.log")
 
     # ---- health ----
     async def _probe(self, n: Node, sem: asyncio.Semaphore) -> tuple[str, float | None]:
@@ -159,7 +200,8 @@ class Hub:
                             if r.status_code < 500:
                                 times.append(time.monotonic() - t)
                         except Exception:  # noqa: BLE001
-                            pass
+                            if not times:
+                                break  # dead node: fail fast
             except Exception:  # noqa: BLE001
                 pass
             return n.key, (statistics.median(times) if len(times) >= 2 else None)
@@ -167,7 +209,7 @@ class Hub:
     async def test(self) -> None:
         if not self.nodes:
             return
-        sem = asyncio.Semaphore(16)
+        sem = asyncio.Semaphore(64)
         res = dict(await asyncio.gather(*(self._probe(n, sem) for n in self.nodes)))
         now = int(time.time())
         out = {"updated": now, "best_port": self.best, "nodes": [
@@ -205,8 +247,8 @@ class Hub:
             now = time.monotonic()
             try:
                 if self.proc and self.proc.returncode is not None:
-                    log.warning("xray exited (code %s), restarting", self.proc.returncode)
-                    await self._restart_xray()
+                    log.warning("sing-box exited (code %s), restarting", self.proc.returncode)
+                    await self._restart_singbox()
                     last_test = 0.0
                 if now - last_sub >= self.sub_iv:
                     last_sub = now

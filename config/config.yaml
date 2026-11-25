@@ -37,19 +37,19 @@ urlcheck_retries: 1
 urlcheck_concurrency: 4   # parallel url-check batches
 # ---- nodes mode (SOURCE_MODE=nodes needs VPN_SUB_URL in .env) ----
 source_mode: direct       # direct | nodes
-node_interval: 5.0
+node_interval: 90.0
 node_autotune: true
-node_interval_min: 5.0   # = node_interval: autotune never polls faster than the base, it only backs off
-node_interval_max: 15
+node_interval_min: 90.0   # = node_interval: autotune never polls faster than the base, it only backs off
+node_interval_max: 300
 node_tune_window: 60
-node_include_direct: true # home IP works as one more worker
+node_include_direct: false # home IP works as one more worker
 node_scan_concurrency: 100
 node_quarantine: 600
 node_rescan: 1800
 node_min_good: 10
 node_popular_share: 0.5
 node_fallback_direct: false
-node_max_per_min: 6       # hard ceiling of requests per node per 60 s (0 = off)
+node_max_per_min: 1       # hard ceiling of requests per node per 60 s (0 = off)
 node_state_ttl: 21600     # trust remembered good/bad scan result for 6 h (data/nodes_state.json)
 node_profiles: [safari, chrome]
 max_items_per_sec: 0      # 0 = no limit

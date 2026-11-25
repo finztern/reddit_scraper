@@ -91,20 +91,31 @@ docker compose logs -f --tail=50 | grep -E "proxylist|nodepool|new/s"
 The file is re-read every 60 s; a changed proxy set triggers a rescan. `NODE_INCLUDE_DIRECT=true` keeps the home IP as one more worker.
 url-check is independent: still via `URLCHECK_PROXY` / VPN. Node tuning keys (`NODE_*`) apply to proxies too.
 
-## xray-hub (shared xray for all parsers)
-`hub/` is a standalone compose project: one xray with ALL subscription nodes, usable by every parser on the host.
+## hub (shared sing-box for all parsers; vless + hysteria2)
+`hub/` is a standalone compose project: one sing-box with ALL subscription nodes (xhttp vless nodes are skipped: unsupported), usable by every parser on the host.
 ```
 cd hub && cp .env.example .env     # VPN_SUB_URL lives only here
 docker compose up -d --build
 cat data/nodes.json                # key, name, port, alive, latency_ms
 ```
 - Every node = SOCKS `127.0.0.1:<port>` (from `HUB_PORT_BASE`=21000, port is stable per node, persisted in `data/ports.json`).
-- `127.0.0.1:10809` = always the fastest alive node (xray leastPing balancer): use as `URLCHECK_PROXY` in any parser.
+- `127.0.0.1:10809` = always the fastest alive node (sing-box urltest): use as `URLCHECK_PROXY` in any parser.
 - Every `HUB_TEST_MINUTES` (N, 10) each node is probed through its own port (`HUB_PROBE_URL`); `HUB_SUB_HOURS` (M, 6) re-downloads the subscription; xray restarts only if the node set changed.
-- Reddit uses only alive nodes: in the parser `.env` set `VPN_MODE=external` (no `VPN_SUB_URL`, no own xray), `SOURCE_MODE=nodes` as before. Parser mounts `./hub/data` read-only as `/hub`.
+- Reddit uses only alive nodes: in the parser `.env` set `VPN_MODE=external` (no `VPN_SUB_URL`, no own proxy core), `SOURCE_MODE=nodes` as before. Parser mounts `./hub/data` read-only as `/hub`.
 - Start the hub before the parser. Other parsers: mount `hub/data` and read `nodes.json` (alive=true), or just use port 10809.
 
 ## Pipeline nodes (`VPN_MODE=pipeline`)
 All alive SOCKS5 nodes come from the local pipeline API (`NODES_URL`, default `http://127.0.0.1:8099/nodes`, same host, `network_mode: host`).
 List is re-polled every `NODES_POLL`=30 s; a changed alive set triggers a rescan (new nodes start, dead ones are dropped). API down -> last list is kept.
 url-check goes through the 2 fastest nodes. `.env`: `VPN_MODE=pipeline`, `SOURCE_MODE=nodes`; no `VPN_SUB_URL`/`URLCHECK_PROXY`.
+
+## Large subscription (~600 nodes, vless + hysteria2): rare polling per node
+Defaults in `config/config.yaml`/`.env.example`: `NODE_INTERVAL=90` (autotune never faster, backs off up to 300), `NODE_MAX_PER_MIN=1`,
+`NODE_INCLUDE_DIRECT=false`, hub tests every 30 min. Output is demand-driven (`config/runtime.yaml: target_rate`): the pool only fetches what the
+buffer needs, spread across all good nodes, so each node is hit ~1 req/90 s or less. Raise `NODE_INTERVAL` further if nodes get 429/403.
+```
+cd hub && cp .env.example .env     # VPN_SUB_URL=... (secret, only here)
+docker compose up -d --build && sleep 60 && docker compose logs --tail=5 | tail -5
+cd .. && cp .env.example .env      # VPN_MODE=external, SOURCE_MODE=nodes, comment out VPN_SUB_URL
+docker compose up -d --build && docker compose logs -f --tail=30 | grep -E "nodepool|new/s"
+```

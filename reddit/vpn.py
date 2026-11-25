@@ -30,8 +30,9 @@ class Node:
     name: str
     host: str
     port: int
-    uuid: str
+    uuid: str            # vless uuid / hysteria2 password
     params: dict[str, str]
+    scheme: str = "vless"  # vless | hysteria2
 
 
 def parse_vless(uri: str) -> Node | None:
@@ -49,6 +50,28 @@ def parse_vless(uri: str) -> Node | None:
         return None
 
 
+def parse_hysteria2(uri: str) -> Node | None:
+    uri = uri.strip()
+    if uri.startswith("hy2://"):
+        uri = "hysteria2://" + uri[6:]
+    if not uri.startswith("hysteria2://"):
+        return None
+    try:
+        u = urlsplit(uri)
+        if not (u.hostname and u.port):
+            return None
+        pw = unquote(u.username or "")
+        if u.password:
+            pw += ":" + unquote(u.password)
+        if not pw:
+            return None
+        q = {k: v[0] for k, v in parse_qs(u.query, keep_blank_values=True).items()}
+        key = hashlib.sha1(uri.split("#", 1)[0].encode()).hexdigest()[:10]
+        return Node(key, unquote(u.fragment) or key, u.hostname, u.port, pw, q, "hysteria2")
+    except ValueError:
+        return None
+
+
 def parse_subscription(text: str) -> list[Node]:
     text = text.strip()
     if "://" not in text:  # base64-encoded subscription
@@ -59,7 +82,7 @@ def parse_subscription(text: str) -> list[Node]:
             return []
     seen: dict[str, Node] = {}
     for line in text.splitlines():
-        n = parse_vless(line)
+        n = parse_vless(line) or parse_hysteria2(line)
         if n:
             seen[n.key] = n
     return sorted(seen.values(), key=lambda n: n.key)
