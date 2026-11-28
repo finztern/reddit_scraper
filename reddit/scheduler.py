@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 import time
 from typing import Awaitable, Callable
 
@@ -17,6 +18,12 @@ log = logging.getLogger("scheduler")
 POPULAR_URL = "https://www.reddit.com/r/popular/comments/?limit=100"
 
 
+PAGE_CAP = 100.0      # a page never holds more than 100 comments
+RATE_PRIOR = 1.0      # optimistic start rate (new/s) so every sub gets probed
+RATE_FLOOR = 0.01     # dead subs are still re-checked eventually
+_SUB_RE = re.compile(r"/r/([^/]+)/comments/")
+
+
 def sub_url(sub: str) -> str:
     return f"https://www.reddit.com/r/{sub}/comments/?limit=100"
 
@@ -28,15 +35,37 @@ class TargetPicker:
         self.subs = list(subs)
         self.weight = max(1, popular_weight)
         self._last: dict[str, float] = {s: 0.0 for s in self.subs}
+        self._rate: dict[str, float] = {}   # EMA of new comments/s per sub (unknown -> RATE_PRIOR)
+        self._dt: dict[str, float] = {}     # seconds between the last two polls of a sub
         self._n = 0
         self._acc = 0.0
 
     def _sub(self) -> str:
-        s = min(self.subs, key=lambda x: self._last[x])
-        self._last[s] = time.monotonic()
-        self._n += 1  # tie-break for equal timestamps on coarse clocks
-        self._last[s] += self._n * 1e-9
-        return sub_url(s)
+        """Pick the sub with the highest expected yield: min(100, rate * age); ties -> longest unpolled."""
+        now = time.monotonic()
+        best, key = self.subs[0], (-1.0, -1.0)
+        for s in self.subs:
+            age = now - self._last[s]
+            k = (min(PAGE_CAP, self._rate.get(s, RATE_PRIOR) * age), age)
+            if k > key:
+                best, key = s, k
+        prev = self._last[best]
+        self._last[best] = now
+        self._dt[best] = now - prev if prev > 0 else 0.0
+        return sub_url(best)
+
+    def note(self, url: str, new: int) -> None:
+        """Feed back the number of NEW comments a sub page yielded: updates that sub's new-comments/s estimate."""
+        m = _SUB_RE.search(url)
+        if not m or m.group(1) not in self._last:
+            return
+        s = m.group(1)
+        dt = self._dt.pop(s, 0.0)
+        if dt <= 1.0:
+            return
+        r = max(RATE_FLOOR, new / dt)
+        old = self._rate.get(s)
+        self._rate[s] = r if old is None else 0.7 * old + 0.3 * r
 
     def pick(self) -> str:
         """Direct mode: `popular_weight` popular requests per one sub request."""

@@ -328,3 +328,24 @@ def test_interval_recovers_when_demand_limited():
     assert a.step(Window(pages=100)) == "recover" and a.interval == pytest.approx(5.0625)
     assert a.step(Window(pages=100)) == "recover" and a.interval == pytest.approx(5.0)
     assert a.step(Window(pages=100)) == "hold"                   # never below the base
+
+
+def test_picker_prefers_active_subs():
+    import reddit.scheduler as sch
+    t = [1000.0]
+    orig = sch.time.monotonic
+    sch.time.monotonic = lambda: t[0]
+    try:
+        p = TargetPicker(["hot", "mid", "dead"], 3)
+        for _ in range(3):                       # probe all once
+            p.pick_share(0.0)
+        counts = {"hot": 0, "mid": 0, "dead": 0}
+        for _ in range(300):
+            t[0] += 2.0
+            url = p.pick_share(0.0)
+            s = url.split("/r/")[1].split("/")[0]
+            counts[s] += 1
+            p.note(url, {"hot": 60, "mid": 10, "dead": 0}[s])
+        assert counts["hot"] > counts["mid"] > counts["dead"]
+    finally:
+        sch.time.monotonic = orig

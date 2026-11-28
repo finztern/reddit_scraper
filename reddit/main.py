@@ -82,7 +82,8 @@ async def amain() -> None:
     m.gauges["buf"] = sender.pending
     bucket = TokenBucket(s.max_items_per_sec) if s.max_items_per_sec > 0 else None
 
-    on_page = make_on_page(s, m, seen, sender, mode, bucket, demand)
+    picker = TargetPicker(s.subs, s.popular_weight)
+    on_page = make_on_page(s, m, seen, sender, mode, bucket, demand, picker)
 
     http = HttpClient(s.connect_timeout, s.read_timeout)
     scheds: list[Scheduler] = []
@@ -93,7 +94,7 @@ async def amain() -> None:
                           s.node_autotune, data / "nodepool.json")
         budget = TrafficBudget(s.max_gb_per_day, data / "traffic.json")
         gate = PageGate(s.max_pages_per_sec) if s.max_pages_per_sec > 0 else None
-        pool = NodePool(s, src, m, on_page, TargetPicker(s.subs, s.popular_weight), tuner, budget, gate, demand,
+        pool = NodePool(s, src, m, on_page, picker, tuner, budget, gate, demand,
                         state_path=data / "nodes_state.json")
         src.on_nodes_changed = pool.nodes_changed
         log.info("nodes mode: interval=%.1fs autotune=%s popular_share=%.2f include_direct=%s limits: items=%s pages=%s gb=%s",

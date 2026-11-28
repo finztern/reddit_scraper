@@ -5,7 +5,7 @@ from . import filters, mapper, parser
 from .scheduler import TargetPicker
 
 
-def make_on_page(s, m, seen, sender, parent_mode: str, bucket=None, demand=None):
+def make_on_page(s, m, seen, sender, parent_mode: str, bucket=None, demand=None, picker=None):
     async def on_page(text: str, url: str = "") -> int:
         raws = parser.parse(text)
         n = len(raws)
@@ -42,6 +42,8 @@ def make_on_page(s, m, seen, sender, parent_mode: str, bucket=None, demand=None)
             await sender.submit(mapper.to_item(raw, content, collected, parent_mode))
         if demand:
             demand.note_new(new)
+        if picker:
+            picker.note(url, new)
         sat = n >= 90 and dups == 0
         if sat:
             m.inc("pages_sat")
